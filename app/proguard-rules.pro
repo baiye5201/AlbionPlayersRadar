@@ -1,9 +1,19 @@
--keepattributes *Annotation*
--keepattributes SourceFile,LineNumberTable
--keep public class * extends java.lang.Exception
+# AlbionPlayersRadar ProGuard Rules
 
-# Keep model classes
+# Keep Photon packet classes
+-keep class com.albionplayersradar.parser.** { *; }
 -keep class com.albionplayersradar.data.** { *; }
 
-# Keep Kotlin metadata
+# Kotlin
+-keepattributes *Annotation*
+-keep class kotlin.** { *; }
 -keep class kotlin.Metadata { *; }
+-dontwarn kotlin.**
+
+# Coroutines
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
+
+# AndroidX
+-keep class androidx.** { *; }
+-dontwarn androidx.**
