@@ -43,7 +43,8 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
     fun startVpn() {
         if (running) return
         try {
-            val builder = android.net.VpnService.Builder(this@AlbionVpnService)
+            val builder = android.net.VpnService.Builder()
+                                                
                 .setMtu(2048)
                 .addAddress("10.0.0.2", 32)
                 .addRoute("0.0.0.0", 0)
