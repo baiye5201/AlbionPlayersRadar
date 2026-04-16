@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Albion Players Radar</string>
-    <string name="notification_channel_name">VPN Radar Service</string>
-    <string name="notification_channel_desc">Shows when radar is active</string>
-    <string name="notification_title">Albion Radar Active</string>
-    <string name="notification_text">Monitoring players in zone</string>
+    <string name="notification_channel_name">Albion Radar</string>
+    <string name="notification_channel_desc">Shows when the radar VPN is active</string>
 </resources>
