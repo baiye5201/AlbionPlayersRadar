@@ -16,6 +16,7 @@ object EventRouter {
     interface PlayerListener {
         fun onPlayerJoined(id: Long, name: String, guild: String, posX: Float, posY: Float, posZ: Float, faction: Int)
         fun onPlayerLeft(id: Long)
+        fun onPlayerMoved(id: Long, posX: Float, posY: Float, posZ: Float)
         fun onPlayerHealthChanged(id: Long, currentHp: Float, maxHp: Float)
     }
 
@@ -28,7 +29,7 @@ object EventRouter {
     }
 
     fun onUdpPacketReceived(data: ByteArray) {
-        PhotonPacketParser.parse(data) { type, params ->
+        PhotonPacketParser.parsePacket(data) { type, params ->
             when (type) {
                 "event" -> {
                     val code = (params[255.toByte()] as? Number)?.toInt() ?: 0
@@ -48,6 +49,7 @@ object EventRouter {
                     val code = (params[255.toByte()] as? Number)?.toInt() ?: 0
                     callback?.onResponse(code, params)
                 }
+                else -> {}
             }
         }
     }
@@ -62,7 +64,7 @@ object EventRouter {
         val posX = (params[4.toByte()] as? Number)?.toFloat() ?: 0f
         val posY = (params[5.toByte()] as? Number)?.toFloat() ?: 0f
         val posZ = (params[6.toByte()] as? Number)?.toFloat() ?: 0f
-        // Move events don't include all player info — we update position only
+        playerListener?.onPlayerMoved(id, posX, posY, posZ)
     }
 
     private fun handleNewCharacter(params: Map<Byte, Any>) {
