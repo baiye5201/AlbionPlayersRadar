@@ -25,7 +25,7 @@ object PhotonDeserializer {
 
     data class EventData(
         val code: Int,
-        val params: Map<Byte, Any>
+        val params: Map<Int, Any>
     )
 
     data class ParseResult(
@@ -36,13 +36,13 @@ object PhotonDeserializer {
 
     data class OperationRequest(
         val opCode: Int,
-        val params: Map<Byte, Any>
+        val params: Map<Int, Any>
     )
 
     data class OperationResponse(
         val opCode: Int,
         val returnCode: Int,
-        val params: Map<Byte, Any>
+        val params: Map<Int, Any>
     )
 
     private const val CMD_DISCONNECT = 4
@@ -66,14 +66,12 @@ object PhotonDeserializer {
             val timestamp = intFromBytes(data[6], data[7], data[8], data[9]).toLong() and 0xFFFFFFFFL
             val challenge = intFromBytes(data[10], data[11], data[12], data[13]).toLong() and 0xFFFFFFFFL
 
-            if (flags and 1 != 0) return ParseResult(events, requests, responses) // encrypted
+            if (flags and 1 != 0) return ParseResult(events, requests, responses)
 
             var offset = 14
             repeat(commandCount) {
                 if (offset + 12 > data.size) return@repeat
                 val cmdType = data[offset].toInt() and 0xFF
-                val channelId = data[offset + 1].toInt() and 0xFF
-                val cmdFlags = data[offset + 2].toInt() and 0xFF
                 offset += 4
                 val cmdLen = intFromBytes(data[offset], data[offset + 1], data[offset + 2], data[offset + 3])
                 offset += 4
@@ -108,18 +106,18 @@ object PhotonDeserializer {
     private fun parseMessage(payload: ByteArray, events: MutableList<EventData>, requests: MutableList<OperationRequest>, responses: MutableList<OperationResponse>) {
         if (payload.size < 2) return
         val msgType = payload[0].toInt() and 0xFF
-        val data = payload.copyOfRange(1, payload.size)
+        val body = payload.copyOfRange(1, payload.size)
         when (msgType) {
             MSG_EVENT -> {
-                val event = parseEventData(data)
-                if (event != null) events.add(event)
+                val ev = parseEventData(body)
+                if (ev != null) events.add(ev)
             }
             MSG_REQUEST -> {
-                val req = parseRequest(data)
+                val req = parseRequest(body)
                 if (req != null) requests.add(req)
             }
             MSG_RESPONSE -> {
-                val resp = parseResponse(data)
+                val resp = parseResponse(body)
                 if (resp != null) responses.add(resp)
             }
         }
@@ -129,42 +127,38 @@ object PhotonDeserializer {
         try {
             if (data.isEmpty()) return null
             val code = data[0].toInt() and 0xFF
-            val params = mutableMapOf<Byte, Any>()
+            val params = mutableMapOf<Int, Any>()
             var offset = 1
             val count = readUInt8(data, offset); offset++
             repeat(count) {
                 if (offset >= data.size) return@repeat
-                val key = data[offset].toByte(); offset++
+                val key = data[offset].toInt() and 0xFF; offset++
                 if (offset >= data.size) return@repeat
                 val (value, newOffset) = readValue(data, offset)
                 params[key] = value
                 offset = newOffset
             }
             return EventData(code, params)
-        } catch (e: Exception) {
-            return null
-        }
+        } catch (e: Exception) { return null }
     }
 
     private fun parseRequest(data: ByteArray): OperationRequest? {
         try {
-            if (data.size < 2) return null
+            if (data.size < 1) return null
             val opCode = data[0].toInt() and 0xFF
-            val params = mutableMapOf<Byte, Any>()
+            val params = mutableMapOf<Int, Any>()
             var offset = 1
             val count = readUInt8(data, offset); offset++
             repeat(count) {
                 if (offset >= data.size) return@repeat
-                val key = data[offset].toByte(); offset++
+                val key = data[offset].toInt() and 0xFF; offset++
                 if (offset >= data.size) return@repeat
                 val (value, newOffset) = readValue(data, offset)
                 params[key] = value
                 offset = newOffset
             }
             return OperationRequest(opCode, params)
-        } catch (e: Exception) {
-            return null
-        }
+        } catch (e: Exception) { return null }
     }
 
     private fun parseResponse(data: ByteArray): OperationResponse? {
@@ -172,43 +166,48 @@ object PhotonDeserializer {
             if (data.size < 3) return null
             val opCode = data[0].toInt() and 0xFF
             val returnCode = intFromBytes(data[1], data[2], 0, 0)
-            val params = mutableMapOf<Byte, Any>()
+            val params = mutableMapOf<Int, Any>()
             var offset = 3
             val count = readUInt8(data, offset); offset++
             repeat(count) {
                 if (offset >= data.size) return@repeat
-                val key = data[offset].toByte(); offset++
+                val key = data[offset].toInt() and 0xFF; offset++
                 if (offset >= data.size) return@repeat
                 val (value, newOffset) = readValue(data, offset)
                 params[key] = value
                 offset = newOffset
             }
             return OperationResponse(opCode, returnCode, params)
-        } catch (e: Exception) {
-            return null
-        }
+        } catch (e: Exception) { return null }
     }
 
     private fun readValue(data: ByteArray, offset: Int): Pair<Any, Int> {
         if (offset >= data.size) return Pair(Unit, offset)
         val typeCode = data[offset].toInt() and 0xFF
         return when (typeCode) {
-            0 -> Pair(null, offset + 1)
-            2 -> Pair(data[offset + 1].toInt() != 0, offset + 2)
-            3 -> Pair(data[offset + 1].toInt() and 0xFF, offset + 2)
+            0 -> Pair(Unit, offset + 1)
+            2 -> {
+                val v = if (offset + 1 < data.size) data[offset + 1].toInt() != 0 else false
+                Pair(v, offset + 2)
+            }
+            3 -> {
+                val v = if (offset + 1 < data.size) data[offset + 1].toInt() and 0xFF else 0
+                Pair(v, offset + 2)
+            }
             4 -> {
-                val v = intFromBytes(data[offset + 1], data[offset + 2], 0, 0).toShort()
+                val v = if (offset + 2 < data.size) intFromBytes(data[offset + 1], data[offset + 2], 0, 0).toShort() else 0.toShort()
                 Pair(v, offset + 3)
             }
             5 -> {
-                val bits = intFromBytes(data[offset + 1], data[offset + 2], data[offset + 3], data[offset + 4])
-                Pair(Float.fromBits(bits), offset + 5)
+                if (offset + 4 < data.size) {
+                    val bits = intFromBytes(data[offset + 1], data[offset + 2], data[offset + 3], data[offset + 4])
+                    Pair(Float.fromBits(bits), offset + 5)
+                } else Pair(0f, offset + 1)
             }
             7 -> {
                 val len = readUInt16(data, offset + 1)
-                val end = offset + 1 + 2 + len
-                if (end > data.size) Pair("", offset + 1)
-                else {
+                val end = offset + 3 + len
+                if (end > data.size) Pair("", offset + 3) else {
                     val str = String(data, offset + 3, len, Charsets.UTF_8)
                     Pair(str, end)
                 }
@@ -217,10 +216,22 @@ object PhotonDeserializer {
                 val (v, end) = readCompressedInt(data, offset + 1)
                 Pair(v, end)
             }
-            11 -> Pair(data[offset + 1].toInt() and 0xFF, offset + 2)
-            12 -> Pair(-(data[offset + 1].toInt() and 0xFF), offset + 2)
-            13 -> Pair(readUInt16(data, offset + 1), offset + 3)
-            14 -> Pair(-readUInt16(data, offset + 1), offset + 3)
+            11 -> {
+                val v = if (offset + 1 < data.size) data[offset + 1].toInt() and 0xFF else 0
+                Pair(v, offset + 2)
+            }
+            12 -> {
+                val v = if (offset + 1 < data.size) -(data[offset + 1].toInt() and 0xFF) else 0
+                Pair(v, offset + 2)
+            }
+            13 -> {
+                val v = if (offset + 2 < data.size) readUInt16(data, offset + 1) else 0
+                Pair(v, offset + 3)
+            }
+            14 -> {
+                val v = if (offset + 2 < data.size) -readUInt16(data, offset + 1) else 0
+                Pair(v, offset + 3)
+            }
             21 -> {
                 val count = readUInt16(data, offset + 1)
                 val map = mutableMapOf<Any, Any>()
@@ -267,16 +278,27 @@ object PhotonDeserializer {
 
     private fun readPrimitive(type: Int, data: ByteArray, offset: Int): Pair<Any, Int> {
         return when (type) {
-            2 -> Pair(data[offset].toInt() != 0, offset + 1)
-            3 -> Pair(data[offset].toInt() and 0xFF, offset + 1)
-            4 -> Pair(intFromBytes(data[offset], data[offset + 1], 0, 0).toShort(), offset + 2)
+            2 -> {
+                val v = if (offset < data.size) data[offset].toInt() != 0 else false
+                Pair(v, offset + 1)
+            }
+            3 -> {
+                val v = if (offset < data.size) data[offset].toInt() and 0xFF else 0
+                Pair(v, offset + 1)
+            }
+            4 -> {
+                val v = if (offset + 1 < data.size) intFromBytes(data[offset], data[offset + 1], 0, 0).toShort() else 0.toShort()
+                Pair(v, offset + 2)
+            }
             5 -> {
-                val bits = intFromBytes(data[offset], data[offset + 1], data[offset + 2], data[offset + 3])
-                Pair(Float.fromBits(bits), offset + 4)
+                if (offset + 3 < data.size) {
+                    val bits = intFromBytes(data[offset], data[offset + 1], data[offset + 2], data[offset + 3])
+                    Pair(Float.fromBits(bits), offset + 4)
+                } else Pair(0f, offset + 1)
             }
             7 -> {
-                val len = readUInt16(data, offset)
-                Pair(String(data, offset + 2, len, Charsets.UTF_8), offset + 2 + len)
+                val len = if (offset < data.size) data[offset].toInt() and 0xFF else 0
+                Pair(String(data, offset + 1, len, Charsets.UTF_8), offset + 1 + len)
             }
             else -> Pair(Unit, offset + 1)
         }
@@ -288,7 +310,7 @@ object PhotonDeserializer {
 
     private fun readUInt16(data: ByteArray, offset: Int): Int {
         if (offset + 1 >= data.size) return 0
-        return ((data[offset].toInt() and 0xFF)) or ((data[offset + 1].toInt() and 0xFF) shl 8)
+        return (data[offset].toInt() and 0xFF) or ((data[offset + 1].toInt() and 0xFF) shl 8)
     }
 
     private fun readCompressedInt(data: ByteArray, offset: Int): Pair<Int, Int> {
@@ -308,7 +330,7 @@ object PhotonDeserializer {
     }
 
     private fun intFromBytes(b0: Byte, b1: Byte, b2: Byte, b3: Byte): Int {
-        return ((b0.toInt() and 0xFF)) or
+        return (b0.toInt() and 0xFF) or
                 ((b1.toInt() and 0xFF) shl 8) or
                 ((b2.toInt() and 0xFF) shl 16) or
                 ((b3.toInt() and 0xFF) shl 24)
