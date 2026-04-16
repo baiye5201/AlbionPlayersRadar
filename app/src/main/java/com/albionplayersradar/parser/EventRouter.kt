@@ -3,93 +3,69 @@ package com.albionplayersradar.parser
 import android.util.Log
 
 object EventRouter {
-
     interface Callback {
-        fun onEvent(code: Int, params: Map<Byte, Any>)
-        fun onRequest(code: Int, params: Map<Byte, Any>)
-        fun onResponse(code: Int, params: Map<Byte, Any>)
-    }
-
-    private var callback: Callback? = null
-    private var playerListener: PlayerListener? = null
-
-    interface PlayerListener {
         fun onPlayerJoined(id: Long, name: String, guild: String, posX: Float, posY: Float, posZ: Float, faction: Int)
         fun onPlayerLeft(id: Long)
         fun onPlayerMoved(id: Long, posX: Float, posY: Float, posZ: Float)
         fun onPlayerHealthChanged(id: Long, currentHp: Float, maxHp: Float)
     }
+    private var cb: Callback? = null
+    fun setPlayerListener(c: Callback) { cb = c }
 
-    fun setPlayerListener(listener: PlayerListener?) {
-        playerListener = listener
-    }
+    private var localPlayerId: Long = -1
+    private var localX: Float = 0f
+    private var localY: Float = 0f
 
-    fun setCallback(cb: Callback?) {
-        callback = cb
+    fun setLocalPlayer(id: Long, x: Float, y: Float) {
+        localPlayerId = id; localX = x; localY = y
     }
 
     fun onUdpPacketReceived(data: ByteArray) {
-        PhotonPacketParser.parsePacket(data) { type, params ->
-            when (type) {
-                "event" -> {
-                    val code = (params[255.toByte()] as? Number)?.toInt() ?: 0
-                    when (code) {
-                        1 -> handleLeave(params)
-                        3 -> handleMove(params)
-                        29 -> handleNewCharacter(params)
-                        6, 91 -> handleHealth(params)
+        PhotonPacketParser.parse(data) { type, params ->
+            try {
+                when (type) {
+                    "event" -> {
+                        val code = (params[252.toByte()] as? Number)?.toInt() ?: return@parse
+                        when (code) {
+                            29 -> {
+                                val id = (params[0.toByte()] as? Number)?.toLong() ?: return@parse
+                                if (id == localPlayerId) return@parse
+                                val name = params[1.toByte()] as? String ?: return@parse
+                                val guild = params[8.toByte()] as? String ?: ""
+                                val faction = (params[53.toByte()] as? Number)?.toInt() ?: 0
+                                val loc = params[7.toByte()] as? List<*> ?: return@parse
+                                val posX = (loc[0] as? Number)?.toFloat() ?: 0f
+                                val posY = (loc[1] as? Number)?.toFloat() ?: 0f
+                                cb?.onPlayerJoined(id, name, guild, posX, posY, 0f, faction)
+                            }
+                            3 -> {
+                                val id = (params[0.toByte()] as? Number)?.toLong() ?: return@parse
+                                val posX = (params[4.toByte()] as? Number)?.toFloat() ?: 0f
+                                val posY = (params[5.toByte()] as? Number)?.toFloat() ?: 0f
+                                cb?.onPlayerMoved(id, posX, posY, 0f)
+                            }
+                            6 -> {
+                                val id = (params[0.toByte()] as? Number)?.toLong() ?: return@parse
+                                val cur = (params[2.toByte()] as? Number)?.toFloat() ?: 0f
+                                val max = (params[3.toByte()] as? Number)?.toFloat() ?: 1f
+                                cb?.onPlayerHealthChanged(id, cur, max)
+                            }
+                        }
                     }
-                    callback?.onEvent(code, params)
+                    "response" -> {
+                        val code = (params[253.toByte()] as? Number)?.toInt() ?: return@parse
+                        if (code == 2) {
+                            val id = (params[0.toByte()] as? Number)?.toLong() ?: return@parse
+                            val posArray = params[9.toByte()] as? ByteArray
+                            if (posArray != null && posArray.size >= 8) {
+                                val posX = java.nio.ByteBuffer.wrap(posArray).float
+                                val posY = java.nio.ByteBuffer.wrap(posArray).float
+                                setLocalPlayer(id, posX, posY)
+                            }
+                        }
+                    }
                 }
-                "request" -> {
-                    val code = (params[255.toByte()] as? Number)?.toInt() ?: 0
-                    callback?.onRequest(code, params)
-                }
-                "response" -> {
-                    val code = (params[255.toByte()] as? Number)?.toInt() ?: 0
-                    callback?.onResponse(code, params)
-                }
-                else -> {}
-            }
-        }
-    }
-
-    private fun handleLeave(params: Map<Byte, Any>) {
-        val id = (params[0.toByte()] as? Number)?.toLong() ?: return
-        playerListener?.onPlayerLeft(id)
-    }
-
-    private fun handleMove(params: Map<Byte, Any>) {
-        val id = (params[0.toByte()] as? Number)?.toLong() ?: return
-        val posX = (params[4.toByte()] as? Number)?.toFloat() ?: 0f
-        val posY = (params[5.toByte()] as? Number)?.toFloat() ?: 0f
-        val posZ = (params[6.toByte()] as? Number)?.toFloat() ?: 0f
-        playerListener?.onPlayerMoved(id, posX, posY, posZ)
-    }
-
-    private fun handleNewCharacter(params: Map<Byte, Any>) {
-        try {
-            val id = (params[0.toByte()] as? Number)?.toLong() ?: return
-            val name = params[1.toByte()]?.toString() ?: ""
-            val guild = params[8.toByte()]?.toString() ?: ""
-            val faction = (params[53.toByte()] as? Number)?.toInt() ?: 0
-            val posX = (params[4.toByte()] as? Number)?.toFloat() ?: 0f
-            val posY = (params[5.toByte()] as? Number)?.toFloat() ?: 0f
-            val posZ = (params[6.toByte()] as? Number)?.toFloat() ?: 0f
-            playerListener?.onPlayerJoined(id, name, guild, posX, posY, posZ, faction)
-        } catch (e: Exception) {
-            Log.e("EventRouter", "handleNewCharacter failed", e)
-        }
-    }
-
-    private fun handleHealth(params: Map<Byte, Any>) {
-        try {
-            val id = (params[0.toByte()] as? Number)?.toLong() ?: return
-            val currentHp = (params[2.toByte()] as? Number)?.toFloat() ?: return
-            val maxHp = (params[3.toByte()] as? Number)?.toFloat() ?: return
-            playerListener?.onPlayerHealthChanged(id, currentHp, maxHp)
-        } catch (e: Exception) {
-            Log.e("EventRouter", "handleHealth failed", e)
+            } catch (e: Exception) { Log.e("EventRouter", "error", e) }
         }
     }
 }
