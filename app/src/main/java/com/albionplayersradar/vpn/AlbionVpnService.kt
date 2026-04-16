@@ -15,12 +15,11 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 
-class AlbionVpnService : Service(), EventRouter.PlayerListener {
+class AlbionVpnService : Service(), EventRouter.Callback {
 
     private var running = false
     private var readerThread: Thread? = null
     private var proxySocket: DatagramSocket? = null
-    var eventRouter: EventRouter? = null
 
     private val SERVER_IP = "5.45.187.219"
     private val SERVER_PORT = 5056
@@ -28,15 +27,13 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
     inner class LocalBinder : Binder() {
         fun getService(): AlbionVpnService = this@AlbionVpnService
     }
-
     private val binder = LocalBinder()
 
     override fun onBind(intent: Intent): IBinder = binder
 
     override fun onCreate() {
         super.onCreate()
-        eventRouter = EventRouter()
-        eventRouter!!.setPlayerListener(this)
+        EventRouter.setPlayerListener(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -47,83 +44,60 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
 
     private fun createNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent, PendingIntent.FLAG_IMMUTABLE
-        )
+        val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, "radar_channel")
             .setContentTitle("Albion Players Radar")
-            .setContentText("VPN is running")
+            .setContentText("VPN running")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
-            .setContentIntent(pendingIntent)
-            .build()
+            .setContentIntent(pi).build()
     }
 
     private fun startVpn() {
         if (running) return
         running = true
-
         try {
-            val vpnInterface = VpnService.prepare(this)
-            if (vpnInterface != null) {
-                Log.e("AlbionVPN", "VPN permission not granted")
-                return
-            }
-
-            val builder = VpnService.Builder()
-            builder.setSession("AlbionPlayersRadar")
-            builder.addAddress("10.0.0.2", 32)
-            builder.addRoute("0.0.0.0", 0)
-            builder.addDnsServer("8.8.8.8")
-            builder.setMtu(1500)
-
-            val tunnel = builder.establish()
+            VpnService.prepare(this)?.let { return }
+            val b = VpnService.Builder()
+            b.setSession("AlbionPlayersRadar")
+            b.addAddress("10.0.0.2", 32)
+            b.addRoute("0.0.0.0", 0)
+            b.addDnsServer("8.8.8.8")
+            b.setMtu(1500)
+            val tunnel = b.establish() ?: return
 
             proxySocket = DatagramSocket()
             proxySocket!!.connect(InetAddress.getByName(SERVER_IP), SERVER_PORT)
 
-            // Read from VPN tunnel → forward to game server
-            readerThread = Thread {
-                val buffer = ByteArray(2048)
-                while (running) {
-                    try {
-                        if (tunnel != null) {
-                            val len = tunnel.read(buffer, 0, buffer.size)
-                            if (len > 0) {
-                                eventRouter?.onUdpPacketReceived(buffer.copyOf(len))
-                                val packet = DatagramPacket(
-                                    buffer.copyOf(len), len,
-                                    InetAddress.getByName(SERVER_IP), SERVER_PORT
-                                )
-                                proxySocket?.send(packet)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        if (running) Log.e("AlbionVPN", "read tunnel error", e)
-                    }
-                }
-            }
-            readerThread!!.start()
-
-            // Read from game server → forward to VPN tunnel
             Thread {
-                val buffer = ByteArray(2048)
+                val buf = ByteArray(2048)
                 while (running) {
                     try {
-                        val packet = DatagramPacket(buffer, buffer.size)
-                        proxySocket?.receive(packet)
-                        if (packet.length > 0 && tunnel != null) {
-                            tunnel.write(packet.data, 0, packet.length)
+                        val len = tunnel.read(buf, 0, buf.size)
+                        if (len > 0) {
+                            EventRouter.onUdpPacketReceived(buf.copyOf(len))
+                            val pkt = DatagramPacket(buf.copyOf(len), len, InetAddress.getByName(SERVER_IP), SERVER_PORT)
+                            proxySocket?.send(pkt)
                         }
                     } catch (e: Exception) {
-                        if (running) Log.e("AlbionVPN", "write tunnel error", e)
+                        if (running) Log.e("VPN", "read", e)
                     }
                 }
             }.start()
 
-            Log.i("AlbionVPN", "VPN tunnel started")
-
+            Thread {
+                val buf = ByteArray(2048)
+                while (running) {
+                    try {
+                        val pkt = DatagramPacket(buf, buf.size)
+                        proxySocket?.receive(pkt)
+                        if (pkt.length > 0) tunnel.write(pkt.data, 0, pkt.length)
+                    } catch (e: Exception) {
+                        if (running) Log.e("VPN", "write", e)
+                    }
+                }
+            }.start()
         } catch (e: Exception) {
-            Log.e("AlbionVPN", "VPN start failed", e)
+            Log.e("AlbionVPN", "failed", e)
         }
     }
 
@@ -132,9 +106,7 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
         try {
             readerThread?.interrupt()
             proxySocket?.close()
-        } catch (e: Exception) {
-            Log.e("AlbionVPN", "stop failed", e)
-        }
+        } catch (e: Exception) { Log.e("VPN", "stop", e) }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -145,14 +117,18 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
     }
 
     override fun onPlayerJoined(id: Long, name: String, guild: String, posX: Float, posY: Float, posZ: Float, faction: Int) {
-        Log.d("AlbionVPN", "Player joined: $name [$guild] at ($posX, $posY, $posZ)")
+        Log.d("AlbionVPN", "JOIN: $name [$guild] ($posX,$posY)")
+        MainActivity.broadcastPlayerEvent(id, name, guild, posX, posY, faction)
     }
 
     override fun onPlayerLeft(id: Long) {
-        Log.d("AlbionVPN", "Player left: $id")
+        Log.d("AlbionVPN", "LEFT: $id")
+        MainActivity.broadcastPlayerLeave(id)
     }
 
-    override fun onPlayerMoved(id: Long, posX: Float, posY: Float, posZ: Float) {}
+    override fun onPlayerMoved(id: Long, posX: Float, posY: Float, posZ: Float) {
+        MainActivity.broadcastPlayerMove(id, posX, posY)
+    }
 
     override fun onPlayerHealthChanged(id: Long, currentHp: Float, maxHp: Float) {}
 }
