@@ -1,145 +1,107 @@
 package com.albionplayersradar.vpn
 
-import android.app.*
+import android.app.Notification
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Intent
 import android.net.VpnService
-import android.os.ParcelFileDescriptor
+import android.os.Binder
+import android.os.IBinder
 import android.util.Log
-import com.albionplayersradar.MainApplication
+import androidx.core.app.NotificationCompat
 import com.albionplayersradar.R
-import com.albionplayersradar.data.Player
-import com.albionplayersradar.data.ZoneInfo
-import com.albionplayersradar.parser.EventRouter
 import com.albionplayersradar.parser.PhotonPacketParser
 import com.albionplayersradar.ui.MainActivity
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.nio.ByteBuffer
 
-class AlbionVpnService : VpnService() {
+class AlbionVpnService : Service(), PhotonPacketParser.PlayerListener {
 
-    private val TAG = "AlbionVpnService"
-    private var vpnInterface: ParcelFileDescriptor? = null
-    private var isRunning = false
-    private lateinit var eventRouter: EventRouter
-    private var playerCallback: PlayerDisplayCallback? = null
+    private val binder = LocalBinder()
+    private var socket: DatagramSocket? = null
+    private var running = false
+    private var readerThread: Thread? = null
+    private var playerListener: PhotonPacketParser.PlayerListener? = null
+    private val parser = PhotonPacketParser()
 
-    interface PlayerDisplayCallback {
-        fun onPlayerSpawned(player: Player)
-        fun onPlayerLeft(id: Long)
-        fun onPlayerMoved(id: Long, x: Float, y: Float)
-        fun onPlayerHealthUpdate(id: Long, health: Int, maxHealth: Int)
-        fun onZoneChanged(zoneId: String, zone: ZoneInfo)
-        fun onLocalPlayerMoved(x: Float, y: Float, zoneId: String)
-        fun onAlert(message: String)
-    }
-
-    fun setPlayerCallback(cb: PlayerDisplayCallback) {
-        playerCallback = cb
-    }
-
-    inner class VpnThread : Thread("AlbionVpnThread") {
-        override fun run() {
-            isRunning = true
-            val vpnFd = vpnInterface!!.fileDescriptor
-            val input = FileInputStream(vpnFd)
-            val output = FileOutputStream(vpnFd)
-            val buffer = ByteBuffer.allocate(4096)
-
-            Log.d(TAG, "VPN thread running")
-
-            while (isRunning) {
-                try {
-                    buffer.clear()
-                    val length = input.read(buffer.array())
-
-                    if (length > 0) {
-                        buffer.limit(length)
-                        processPacket(buffer, length)
-                    }
-                } catch (e: Exception) {
-                    if (isRunning) Log.e(TAG, "Read error: ${e.message}")
-                }
-            }
-
-            try { input.close() } catch (e: Exception) {}
-            try { output.close() } catch (e: Exception) {}
-            Log.d(TAG, "VPN thread stopped")
-        }
-    }
-
-    private fun processPacket(buffer: ByteBuffer, length: Int) {
-        if (length < 20) return
-
-        val version = (buffer.get(0).toInt() shr 4) and 0xF
-        if (version != 4) return
-
-        val ihl = (buffer.get(0).toInt() and 0xF) * 4
-        val protocol = buffer.get(9).toInt() and 0xFF
-        if (protocol != 17) return  // UDP only
-
-        val srcPort = ((buffer.get(ihl).toInt() and 0xFF) shl 8) or
-                      (buffer.get(ihl + 1).toInt() and 0xFF)
-        val dstPort = ((buffer.get(ihl + 2).toInt() and 0xFF) shl 8) or
-                      (buffer.get(ihl + 3).toInt() and 0xFF)
-
-        // Only capture Albion server port
-        if (dstPort != 5056 && dstPort != 5057) return
-
-        val udpOffset = ihl + 8
-        val udpPayloadLen = length - udpOffset
-
-        if (udpPayloadLen <= 8) return
-
-        val payload = buffer.array().copyOfRange(udpOffset, udpOffset + udpPayloadLen)
-        PhotonPacketParser.parsePacket(payload, eventRouter)
+    inner class LocalBinder : Binder() {
+        fun getService(): AlbionVpnService = this@AlbionVpnService
     }
 
     override fun onCreate() {
         super.onCreate()
-
-        eventRouter = EventRouter(
-            onPlayerSpawn = { p -> playerCallback?.onPlayerSpawned(p) },
-            onPlayerLeave = { id -> playerCallback?.onPlayerLeft(id) },
-            onPlayerMove = { id, x, y -> playerCallback?.onPlayerMoved(id, x, y) },
-            onPlayerHealth = { id, h, mh -> playerCallback?.onPlayerHealthUpdate(id, h, mh) },
-            onZoneChange = { zid, zone -> playerCallback?.onZoneChanged(zid, zone) },
-            onLocalPlayerJoined = { _, x, y, zid -> playerCallback?.onLocalPlayerMoved(x, y, zid ?: "") }
-        )
-
-        Log.d(TAG, "Service created")
+        parser.addListener(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = buildNotification()
-
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            startForeground(startId, notification, android.content.pm.ForegroundService.IMPLICIT_FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(startId, notification)
-        }
-
-        startVpnInterface()
+        startForeground(NOTIF_ID, buildNotification())
+        running = true
+        startCapture()
         return START_STICKY
     }
 
-    private fun startVpnInterface() {
-        try {
-            val builder = Builder()
-                .setMtu(2048)
-                .addAddress("10.0.0.2", 32)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer("8.8.8.8")
-                .addDnsServer("8.8.4.4")
-                .addAllowedApplication("com.albiononline")
+    override fun onBind(intent: Intent): IBinder = binder
 
-            vpnInterface = builder.establish()
-            if (vpnInterface != null) {
-                VpnThread().start()
-                Log.d(TAG, "VPN established")
+    override fun onDestroy() {
+        running = false
+        readerThread?.interrupt()
+        socket?.close()
+        socket = null
+        super.onDestroy()
+    }
+
+    fun stopVpn() {
+        running = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    fun setPlayerListener(listener: PhotonPacketParser.PlayerListener?) {
+        playerListener = listener
+    }
+
+    private fun startCapture() {
+        readerThread = Thread {
+            try {
+                val vpnInterface = VpnService.Builder()
+                    .addAddress("10.0.0.2", 32)
+                    .addRoute("0.0.0.0", 0)
+                    .addDnsServer("8.8.8.8")
+                    .setMtu(1500)
+                    .establish()
+
+                socket = DatagramSocket(5056)
+                socket?.soTimeout = 1000
+
+                val buffer = ByteArray(2048)
+                while (running) {
+                    try {
+                        val pkt = DatagramPacket(buffer, buffer.size)
+                        socket?.receive(pkt)
+                        val data = pkt.data.copyOf(pkt.length)
+                        parseAndForward(data)
+                    } catch (e: Exception) {
+                        if (running) continue
+                    }
+                }
+                vpnInterface?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Capture error: ${e.message}")
+            }
+        }.apply { start() }
+    }
+
+    private fun parseAndForward(data: ByteArray) {
+        try {
+            val result = PhotonDeserializer.parsePacket(data)
+            for (event in result.events) {
+                parser.handleEvent(event)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "VPN failed: ${e.message}")
+            Log.d(TAG, "Parse error: ${e.message}")
         }
     }
 
@@ -147,29 +109,36 @@ class AlbionVpnService : VpnService() {
         val pendingIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
-        return Notification.Builder(this, MainApplication.CHANNEL_ID)
-            .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text))
-            .setSmallIcon(R.drawable.ic_radar)
+        return NotificationCompat.Builder(this, "radar_channel")
+            .setContentTitle("Albion Radar")
+            .setContentText("Tracking players in background")
+            .setSmallIcon(R.drawable.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
     }
 
-    override fun onDestroy() {
-        isRunning = false
-        try { vpnInterface?.close() } catch (e: Exception) {}
-        vpnInterface = null
-        super.onDestroy()
+    // PhotonPacketParser.PlayerListener
+    override fun onPlayerFound(player: PhotonPacketParser.PlayerInfo) {
+        playerListener?.onPlayerFound(player)
     }
 
-    override fun onRevoke() {
-        isRunning = false
-        try { vpnInterface?.close() } catch (e: Exception) {}
-        vpnInterface = null
-        super.onRevoke()
+    override fun onPlayerLeft(playerId: Int) {
+        playerListener?.onPlayerLeft(playerId)
+    }
+
+    override fun onPlayerMoved(player: PhotonPacketParser.PlayerInfo) {
+        playerListener?.onPlayerMoved(player)
+    }
+
+    override fun onPlayerHealthChanged(playerId: Int, health: Float, maxHealth: Float) {
+        playerListener?.onPlayerHealthChanged(playerId, health, maxHealth)
+    }
+
+    companion object {
+        private const val TAG = "AlbionVpnService"
+        private const val NOTIF_ID = 1001
     }
 }
