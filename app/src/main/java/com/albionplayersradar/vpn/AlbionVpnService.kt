@@ -41,35 +41,29 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
     }
 
     fun startVpn() {
-        if (running) return
-        try {
-            val builder = android.net.VpnService.Builder()
-                                                
-                .setMtu(2048)
-                .addAddress("10.0.0.2", 32)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer("8.8.8.8")
-
-            builder.addAllowedApplication("com.albiononline")
-
-            tunFd = builder.establish()?.fileDescriptor
-            if (tunFd == null) {
-                Log.e(TAG, "VPN establish returned null")
-                return
-            }
-
-            proxySocket = DatagramSocket(5056)
-            proxySocket?.reuseAddress = true
-
-            running = true
-            readerThread = Thread { readLoop() }
-            readerThread?.start()
-            Log.i(TAG, "VPN started")
-        } catch (e: Exception) {
-            Log.e(TAG, "startVpn error: ${e.message}")
+    if (running) return
+    try {
+        val vpn = android.net.VpnService.Builder(this)
+            .setMtu(2048)
+            .addAddress("10.0.0.2", 32)
+            .addRoute("0.0.0.0", 0)
+            .addDnsServer("8.8.8.8")
+            .addAllowedApplication("com.albiononline")
+        tunFd = vpn.establish()?.fileDescriptor
+        if (tunFd == null) {
+            Log.e(TAG, "VPN establish returned null")
+            return
         }
+        proxySocket = DatagramSocket(5056)
+        proxySocket?.reuseAddress = true
+        running = true
+        readerThread = Thread { readLoop() }
+        readerThread?.start()
+        Log.i(TAG, "VPN started")
+    } catch (e: Exception) {
+        Log.e(TAG, "startVpn error: ${e.message}")
     }
-
+}
     fun stopVpn() {
         running = false
         readerThread?.interrupt()
