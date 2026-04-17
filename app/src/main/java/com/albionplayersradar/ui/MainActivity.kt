@@ -5,7 +5,6 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.WindowCompat
 import com.albionplayersradar.R
 import com.albionplayersradar.data.Player
 import com.albionplayersradar.vpn.AlbionVpnService
@@ -52,7 +51,6 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.log_text)
 
         btnVpn.setOnClickListener { toggleVpn() }
-        WindowCompat.setDecorFitsSystemWindows(window, false)
     }
 
     private fun toggleVpn() {
@@ -67,7 +65,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVpn() {
-        val intent = Intent(this, AlbionVpnService::class.java)
+        val intent = android.content.Intent(this, AlbionVpnService::class.java)
         startForegroundService(intent)
         bindService(intent, vpnConnection, BIND_AUTO_CREATE)
         updateStatus("Starting...")
@@ -75,7 +73,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopVpn() {
         if (vpnBound) { unbindService(vpnConnection); vpnBound = false }
-        stopService(Intent(this, AlbionVpnService::class.java))
+        stopService(android.content.Intent(this, AlbionVpnService::class.java))
         vpnService = null
         updateStatus("Tap START to activate")
     }
