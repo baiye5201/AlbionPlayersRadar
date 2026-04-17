@@ -61,17 +61,17 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
             val prepared = VpnService.prepare(this)
             if (prepared != null) return
 
-            val builder = VpnService.Builder()
-            builder.setSession("AlbionPlayersRadar")
-                .addAddress("10.0.0.2", 32)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer("8.8.8.8")
-                .setMtu(1500)
-                .addAllowedApplication("com.albiononline")
+            val b = VpnService.Builder()
+            b.setSession("AlbionPlayersRadar")
+            b.addAddress("10.0.0.2", 32)
+            b.addRoute("0.0.0.0", 0)
+            b.addDnsServer("8.8.8.8")
+            b.setMtu(1500)
 
-            tunnelFd = builder.establish()
-            if (tunnelFd == null) { stopSelf(); return }
+            val tunnel = b.establish()
+            if (tunnel == null) { stopSelf(); return }
 
+            tunnelFd = tunnel
             running = true
 
             Thread {
@@ -114,7 +114,6 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
         val ihl = (data[0].toInt() and 0x0F) * 4
         val proto = data[9].toInt() and 0xFF
         if (proto != 17) return
-
         val dstPort = ((data[ihl + 2].toInt() and 0xFF) shl 8) or (data[ihl + 3].toInt() and 0xFF)
         val payloadOff = ihl + 8
         val payloadLen = data.size - payloadOff
