@@ -2,29 +2,28 @@ package com.albionplayersradar.vpn
 
 import android.app.Notification
 import android.app.PendingIntent
-import android.app.Service
 import android.content.Intent
 import android.net.VpnService
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.albionplayersradar.MainApplication
 import com.albionplayersradar.parser.EventRouter
 import com.albionplayersradar.ui.MainActivity
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.nio.ByteBuffer
 
-class AlbionVpnService : Service(), EventRouter.PlayerListener {
+class AlbionVpnService : VpnService(), EventRouter.PlayerListener {
 
     private val binder = LocalBinder()
-    private var running = false
+    @Volatile private var running = false
     private var tunnelFd: android.os.ParcelFileDescriptor? = null
     private var udpSocket: DatagramSocket? = null
-
-    private val SERVER_IP = "5.45.187.219"
-    private val SERVER_PORT = 5056
 
     inner class LocalBinder : Binder() {
         fun getService(): AlbionVpnService = this@AlbionVpnService
@@ -38,138 +37,131 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(1, createNotification())
-        startVpn()
+        startForeground(NOTIFICATION_ID, createNotification())
+        startVpnTunnel()
         return START_STICKY
     }
 
     private fun createNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java)
-        val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-        return NotificationCompat.Builder(this, "radar_channel")
+        val pi = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, MainApplication.CHANNEL_ID)
             .setContentTitle("Albion Players Radar")
-            .setContentText("Active")
+            .setContentText("VPN active — monitoring port 5056")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()
     }
 
-    private fun startVpn() {
+    private fun startVpnTunnel() {
         if (running) return
         try {
-            val prepared = VpnService.prepare(this)
-            if (prepared != null) return
-
-            val builder = VpnService.Builder()
+            val builder = Builder()
             builder.setSession("AlbionPlayersRadar")
                 .addAddress("10.0.0.2", 32)
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer("8.8.8.8")
+                .addDisallowedApplication("com.albionplayersradar")
                 .setMtu(1500)
 
-            tunnelFd = builder.establish()
-            if (tunnelFd == null) { stopSelf(); return }
+            tunnelFd = builder.establish() ?: run {
+                Log.e(TAG, "establish() returned null")
+                stopSelf()
+                return
+            }
 
             running = true
 
-            Thread {
+            // Read loop — intercept outgoing packets from TUN
+            Thread({
                 val buf = ByteArray(4096)
                 val fis = FileInputStream(tunnelFd!!.fileDescriptor)
+                val fos = FileOutputStream(tunnelFd!!.fileDescriptor)
                 while (running) {
                     try {
                         val len = fis.read(buf)
-                        if (len > 0) handleOutgoing(buf.copyOf(len))
+                        if (len > 0) {
+                            val pkt = buf.copyOf(len)
+                            handlePacket(pkt, fos)
+                        }
                     } catch (e: Exception) {
-                        if (running) Log.e("VPN", "read: ${e.message}")
+                        if (running) Log.e(TAG, "TUN read: ${e.message}")
+                        break
                     }
                 }
-            }.start()
-
-            Thread {
-                val buf = ByteArray(4096)
-                while (running) {
-                    try {
-                        val pkt = DatagramPacket(buf, buf.size)
-                        udpSocket?.receive(pkt)
-                    } catch (e: Exception) {
-                        if (running) Log.e("VPN", "write: ${e.message}")
-                    }
-                }
-            }.start()
+            }, "tun-read").start()
 
         } catch (e: Exception) {
-            Log.e("AlbionVPN", "start failed: ${e.message}")
+            Log.e(TAG, "startVpnTunnel failed: ${e.message}")
             stopSelf()
         }
     }
 
-    private fun handleOutgoing(data: ByteArray) {
-        if (data.size < 20) return
+    private fun handlePacket(data: ByteArray, fos: FileOutputStream) {
+        if (data.size < 20) {
+            fos.write(data)
+            return
+        }
         val ihl = (data[0].toInt() and 0x0F) * 4
         val proto = data[9].toInt() and 0xFF
-        if (proto != 17) return
 
-        val dstPort = ((data[ihl + 2].toInt() and 0xFF) shl 8) or (data[ihl + 3].toInt() and 0xFF)
-        val payloadOff = ihl + 8
-        val payloadLen = data.size - payloadOff
-        if (payloadLen < 8) return
+        if (proto == 17 /* UDP */ && data.size > ihl + 8) {
+            val dstPort = ((data[ihl + 2].toInt() and 0xFF) shl 8) or (data[ihl + 3].toInt() and 0xFF)
+            val srcPort = ((data[ihl].toInt() and 0xFF) shl 8) or (data[ihl + 1].toInt() and 0xFF)
+            val payloadOff = ihl + 8
+            val payloadLen = data.size - payloadOff
 
-        val payload = data.copyOfRange(payloadOff, payloadOff + payloadLen)
-        EventRouter.onUdpPacketReceived(payload)
-
-        try {
-            if (udpSocket == null) {
-                udpSocket = DatagramSocket()
-                protect(udpSocket!!)
+            if ((dstPort == ALBION_PORT || srcPort == ALBION_PORT) && payloadLen >= 12) {
+                val payload = data.copyOfRange(payloadOff, payloadOff + payloadLen)
+                // Feed to parser (non-blocking)
+                try {
+                    EventRouter.onUdpPacketReceived(payload)
+                } catch (e: Exception) {
+                    Log.e(TAG, "parser: ${e.message}")
+                }
             }
-            val dstIp = InetAddress.getByAddress(byteArrayOf(data[16], data[17], data[18], data[19]))
-            udpSocket!!.send(DatagramPacket(payload, payload.size, dstIp, dstPort))
-        } catch (e: Exception) {
-            Log.e("VPN", "proxy: ${e.message}")
+
+            // Forward packet via protected socket
+            try {
+                if (udpSocket == null || udpSocket!!.isClosed) {
+                    udpSocket = DatagramSocket()
+                    protect(udpSocket!!)
+                }
+                val dstIp = InetAddress.getByAddress(
+                    byteArrayOf(data[16], data[17], data[18], data[19])
+                )
+                udpSocket!!.send(DatagramPacket(data.copyOfRange(ihl + 8, data.size), payloadLen, dstIp, dstPort))
+            } catch (e: Exception) {
+                Log.e(TAG, "forward: ${e.message}")
+                fos.write(data) // fallback: write back to TUN
+            }
+        } else {
+            // Non-UDP or non-Albion — pass through
+            fos.write(data)
         }
     }
 
-    fun stopRun() {
+    private fun stopTunnel() {
         running = false
-        try {
-            tunnelFd?.close()
-            udpSocket?.close()
-        } catch (e: Exception) { Log.e("VPN", "stop: ${e.message}") }
+        try { tunnelFd?.close() } catch (e: Exception) { Log.e(TAG, "close tun: ${e.message}") }
+        try { udpSocket?.close() } catch (e: Exception) { Log.e(TAG, "close udp: ${e.message}") }
+        tunnelFd = null
+        udpSocket = null
+    }
+
+    override fun onRevoke() {
+        super.onRevoke()
+        stopTunnel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopRun()
+        stopTunnel()
+        EventRouter.setPlayerListener(null)
     }
-
-    companion object {
-        var onUpdate: ((String) -> Unit)? = null
-    }
-
-    override fun onPlayerJoined(id: Long, name: String, guild: String, posX: Float, posY: Float, faction: Int) {
-        Log.d("VPN", "JOIN $name [$guild] f=$faction")
-        onUpdate?.invoke("JOIN:$id|$name|$guild|$faction|$posX|$posY")
-    }
-
-    override fun onPlayerLeft(id: Long) {
-        Log.d("VPN", "LEFT $id")
-        onUpdate?.invoke("LEAVE:$id")
-    }
-
-    override fun onPlayerMoved(id: Long, posX: Float, posY: Float) {
-        onUpdate?.invoke("MOVE:$id|$posX|$posY")
-    }
-
-    override fun onPlayerMountChanged(id: Long, isMounted: Boolean) {}
-
-    override fun onMapChanged(zoneId: String) {
-        onUpdate?.invoke("ZONE:$zoneId")
-    }
-
-    override fun onLocalPlayerMoved(posX: Float, posY: Float) {
-        onUpdate?.invoke("LOCAL:$posX|$posY")
-    }
-}
