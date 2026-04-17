@@ -12,11 +12,12 @@ import androidx.core.app.NotificationCompat
 import com.albionplayersradar.parser.EventRouter
 import com.albionplayersradar.ui.MainActivity
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 
-class AlbionVpnService : Service(), EventRouter.PlayerListener {
+class AlbionVpnService : VpnService(), EventRouter.PlayerListener {
 
     private val binder = LocalBinder()
     private var running = false
@@ -61,17 +62,17 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
             val prepared = VpnService.prepare(this)
             if (prepared != null) return
 
-            val b = VpnService.Builder()
-            b.setSession("AlbionPlayersRadar")
-            b.addAddress("10.0.0.2", 32)
-            b.addRoute("0.0.0.0", 0)
-            b.addDnsServer("8.8.8.8")
-            b.setMtu(1500)
+            val builder = Builder()
+            builder.setSession("AlbionPlayersRadar")
+                .addAddress("10.0.0.2", 32)
+                .addRoute("0.0.0.0", 0)
+                .addDnsServer("8.8.8.8")
+                .setMtu(1500)
+                .addAllowedApplication("com.albiononline")
 
-            val tunnel = b.establish()
-            if (tunnel == null) { stopSelf(); return }
+            tunnelFd = builder.establish()
+            if (tunnelFd == null) { stopSelf(); return }
 
-            tunnelFd = tunnel
             running = true
 
             Thread {
@@ -89,13 +90,14 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
 
             Thread {
                 val buf = ByteArray(4096)
+                val fos = FileOutputStream(tunnelFd!!.fileDescriptor)
                 while (running) {
                     try {
                         val pkt = DatagramPacket(buf, buf.size)
                         udpSocket?.receive(pkt)
                         if (pkt.length > 0) {
                             val resp = buildIpPacket(pkt.data, pkt.length)
-                            fis.write(resp)
+                            fos.write(resp)
                         }
                     } catch (e: Exception) {
                         if (running) Log.e("VPN", "write: ${e.message}")
@@ -114,6 +116,7 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
         val ihl = (data[0].toInt() and 0x0F) * 4
         val proto = data[9].toInt() and 0xFF
         if (proto != 17) return
+
         val dstPort = ((data[ihl + 2].toInt() and 0xFF) shl 8) or (data[ihl + 3].toInt() and 0xFF)
         val payloadOff = ihl + 8
         val payloadLen = data.size - payloadOff
@@ -135,7 +138,7 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
     }
 
     private fun buildIpPacket(data: ByteArray, len: Int): ByteArray {
-        val srcIp = byteArrayOf(5, 45.toByte(), (187).toByte(), (219).toByte())
+        val srcIp = byteArrayOf(5, 45.toByte(), 187.toByte(), 219.toByte())
         val dstIp = byteArrayOf(10, 0, 0, 2)
         val srcPort = byteArrayOf((SERVER_PORT shr 8).toByte(), (SERVER_PORT and 0xFF).toByte())
         val dstPort = byteArrayOf(data[2], data[3])
@@ -143,12 +146,11 @@ class AlbionVpnService : Service(), EventRouter.PlayerListener {
 
         val ip = ByteArray(20 + len)
         ip[0] = 0x45.toByte()
-        ip[1] = 0.toByte()
+        ip[1] = 0
         ip[2] = (totalLen shr 8).toByte()
         ip[3] = (totalLen and 0xFF).toByte()
         ip[4] = 0; ip[5] = 0
-        ip[6] = 0x40.toByte()
-        ip[7] = 0.toByte()
+        ip[6] = 0x40.toByte(); ip[7] = 0
         ip[8] = 64; ip[9] = 17
         ip[10] = 0; ip[11] = 0
         System.arraycopy(dstIp, 0, ip, 12, 4)
