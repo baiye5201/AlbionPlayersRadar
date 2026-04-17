@@ -13,121 +13,69 @@ class PlayerRendererView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
+    private val bgPaint = Paint().apply { color = Color.parseColor("#1a1a2e"); style = Paint.Style.FILL }
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#333366"); style = Paint.Style.STROKE; strokeWidth = 2f }
+    private val localPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 20f; textAlign = Paint.Align.CENTER }
+    private val hpBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.DKGRAY }
+    private val hpFgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GREEN }
+
+    private val passivePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#00FF88"); style = Paint.Style.FILL }
+    private val factionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FFA500"); style = Paint.Style.FILL }
+    private val hostilePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FF0000"); style = Paint.Style.FILL }
+
+    private val playerMap = mutableMapOf<Long, Player>()
     private var localX = 0f
     private var localY = 0f
-    private var players = listOf<Player>()
-    private var pvpType = "safe"
     private var radarScale = 50f
-    private var maxDistance = 100f
-    private var showPassive = true
-    private var showFaction = true
-    private var showHostile = true
-    private var showGuild = true
-    private var showHealth = true
-    private var showDistance = false
-
-    private val bgPaint = Paint().apply { color = Color.parseColor("#1a1a2e"); style = Paint.Style.FILL }
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = 2f; color = Color.parseColor("#333366")
-    }
-    private val localPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; style = Paint.Style.FILL
-    }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; textSize = 24f; textAlign = Paint.Align.CENTER
-    }
-    private val alertPaint = Paint().apply {
-        color = Color.parseColor("#FF000033"); style = Paint.Style.FILL
-    }
-    private val hostileAlert = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = 8f; color = Color.RED
-    }
-
-    private val passivePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF88"); style = Paint.Style.FILL
-    }
-    private val factionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#FFA500"); style = Paint.Style.FILL
-    }
-    private val hostilePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#FF4444"); style = Paint.Style.FILL
-    }
-    private val hpBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.DKGRAY }
-    private val hpGreen = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GREEN }
-    private val hpRed = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.RED }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val cx = width / 2f
         val cy = height / 2f
+
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
 
         for (ring in listOf(25f, 50f, 75f)) {
-            val r = ring * radarScale
-            if (r < min(cx, cy)) canvas.drawCircle(cx, cy, r, ringPaint)
+            val radius = ring * radarScale
+            if (radius < min(cx, cy)) canvas.drawCircle(cx, cy, radius, ringPaint)
         }
 
         canvas.drawCircle(cx, cy, 8f, localPaint)
 
-        for (player in players) {
+        for (player in playerMap.values) {
             val dx = (player.posX - localX) * radarScale
             val dy = (player.posY - localY) * radarScale
             val px = cx + dx
             val py = cy + dy
-            if (px < 0 || px > width || py < 0 || py > height) continue
-            val dist = sqrt(dx * dx + dy * dy)
-            if (dist > maxDistance * radarScale) continue
-            if (!shouldShow(player)) continue
 
-            val dotR = if (player.isMounted) 12f else 8f
-            val paint = when (player.threatLevel) {
-                ThreatLevel.HOSTILE -> hostilePaint
-                ThreatLevel.FACTION -> factionPaint
-                ThreatLevel.PASSIVE -> passivePaint
+            if (px < -50 || px > width + 50 || py < -50 || py > height + 50) continue
+
+            val paint = when {
+                player.isHostile -> hostilePaint
+                player.isFactionPlayer -> factionPaint
+                else -> passivePaint
             }
-            canvas.drawCircle(px, py, dotR, paint)
 
-            if (showHealth && player.maxHealth > 0) {
-                val bw = 40f; val bh = 4f
-                val hp = player.healthPercent
+            val dotSize = if (player.isMounted) 12f else 8f
+            canvas.drawCircle(px, py, dotSize, paint)
+
+            val dist = sqrt((player.posX - localX).let { it * it } + (player.posY - localY).let { it * it })
+            if (dist < 50f) {
+                val label = if (player.guildName.isNullOrEmpty()) player.name else "${player.name} [${player.guildName}]"
+                canvas.drawText(label.take(10), px, py + 24f, textPaint)
+            }
+
+            if (player.maxHealth > 0) {
+                val bw = 40f; val bh = 4f; val hp = player.currentHealth.toFloat() / player.maxHealth
                 canvas.drawRect(px - bw / 2, py - 16f, px - bw / 2 + bw, py - 16f + bh, hpBgPaint)
-                val hpPaint = if (hp > 0.5f) hpGreen else hpRed
-                canvas.drawRect(px - bw / 2, py - 16f, px - bw / 2 + bw * hp, py - 16f + bh, hpPaint)
+                canvas.drawRect(px - bw / 2, py - 16f, px - bw / 2 + bw * hp, py - 16f + bh, hpFgPaint)
             }
-
-            val label = if (showGuild && player.guildName != null) {
-                "${player.name.take(8)}[${player.guildName.take(4)}]"
-            } else {
-                player.name.take(10)
-            }
-            if (dist < 80f) canvas.drawText(label, px, py + 20f, textPaint)
-            if (showDistance) canvas.drawText("%.0fm".format(dist), px + 10f, py - 10f, textPaint)
-        }
-
-        val hasHostile = players.any { it.threatLevel == ThreatLevel.HOSTILE }
-        if (hasHostile && pvpType == "black") {
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), alertPaint)
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), hostileAlert)
         }
     }
 
-    private fun shouldShow(p: Player): Boolean {
-        return when {
-            p.threatLevel == ThreatLevel.HOSTILE && showHostile -> true
-            p.threatLevel == ThreatLevel.FACTION && showFaction -> true
-            p.threatLevel == ThreatLevel.PASSIVE && showPassive -> true
-            else -> false
-        }
-    }
-
-    fun updateData(lx: Float, ly: Float, list: List<Player>, zoneId: String, zonePvP: String) {
-        localX = lx; localY = ly; players = list; pvpType = zonePvP; invalidate()
-    }
-    fun setShowPassive(v: Boolean) { showPassive = v; invalidate() }
-    fun setShowFaction(v: Boolean) { showFaction = v; invalidate() }
-    fun setShowHostile(v: Boolean) { showHostile = v; invalidate() }
-    fun setShowGuild(v: Boolean) { showGuild = v; invalidate() }
-    fun setShowHealth(v: Boolean) { showHealth = v; invalidate() }
-    fun setShowDistance(v: Boolean) { showDistance = v; invalidate() }
+    fun updatePlayer(player: Player) { playerMap[player.id] = player; invalidate() }
+    fun removePlayer(id: Long) { playerMap.remove(id); invalidate() }
+    fun updateLocal(x: Float, y: Float) { localX = x; localY = y; invalidate() }
     fun setScale(s: Float) { radarScale = s; invalidate() }
 }
