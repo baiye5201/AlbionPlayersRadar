@@ -4,118 +4,141 @@ import android.util.Log
 import java.nio.ByteBuffer
 
 object PhotonPacketParser {
-    private const val TAG = "PhotonParser"
-    private const val HDR = 12
-    private const val CMD_HDR = 12
+    private const val TAG = "PhotonPacketParser"
+    private const val PACKET_HEADER_SIZE = 12
+    private const val CMD_HEADER_SIZE = 12
 
     private const val CMD_DISCONNECT: Byte = 4
     private const val CMD_SEND_RELIABLE: Byte = 6
     private const val CMD_SEND_UNRELIABLE: Byte = 7
     private const val CMD_SEND_FRAGMENT: Byte = 8
+
     private const val MSG_REQUEST: Byte = 2
     private const val MSG_RESPONSE: Byte = 3
     private const val MSG_EVENT: Byte = 4
 
-    fun parse(data: ByteArray, cb: (String, Map<Byte, Any>) -> Unit) {
-        if (data.size < HDR) return
+    fun parse(data: ByteArray, callback: (type: String, params: Map<Byte, Any>) -> Unit) {
+        if (data.size < PACKET_HEADER_SIZE) return
         try {
             val buf = ByteBuffer.wrap(data)
-            buf.position(HDR)
+            buf.position(PACKET_HEADER_SIZE)
+
             while (buf.hasRemaining()) {
                 if (buf.remaining() < 4) break
                 val cmdType = buf.get()
-                buf.get(); buf.get(); buf.get()
+                buf.get()
+                buf.get()
+                buf.get()
                 val cmdLen = buf.int
                 buf.int
-                val payLen = cmdLen - CMD_HDR
-                if (payLen <= 0 || payLen > buf.remaining()) break
+
+                val payloadLen = cmdLen - CMD_HEADER_SIZE
+                if (payloadLen <= 0 || payloadLen > buf.remaining()) break
+
                 when (cmdType.toInt()) {
-                    4 -> buf.position(buf.position() + payLen)
-                    6 -> { buf.get(); parseReliable(buf, payLen - 1, cb) }
-                    7 -> { buf.int; parseReliable(buf, payLen - 4, cb) }
-                    8 -> parseFragment(buf, payLen, cb)
-                    else -> buf.position(buf.position() + payLen)
+                    4 -> { buf.position(buf.position() + payloadLen) }
+                    6 -> {
+                        buf.get()
+                        parseReliable(buf, payloadLen - 1, callback)
+                    }
+                    7 -> {
+                        buf.int
+                        parseReliable(buf, payloadLen - 4, callback)
+                    }
+                    8 -> {
+                        parseFragment(buf, payloadLen, callback)
+                    }
+                    else -> { buf.position(buf.position() + payloadLen) }
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "parse failed: ${e.message}")
+            Log.e(TAG, "parsePacket failed", e)
         }
     }
 
-    private data class Frag(val totalLen: Int, val payload: ByteArray, var written: Int = 0, val seen: MutableSet<Int> = mutableSetOf())
-    private val fragMap = mutableMapOf<Int, Frag>()
+    private val fragmentMap = mutableMapOf<Int, FragmentState>()
+    private data class FragmentState(val totalLen: Int, val payload: ByteArray, var written: Int = 0, val seen: MutableSet<Int> = mutableSetOf())
 
-    private fun parseFragment(buf: ByteBuffer, len: Int, cb: (String, Map<Byte, Any>) -> Unit) {
+    private fun parseFragment(buf: ByteBuffer, len: Int, callback: (type: String, params: Map<Byte, Any>) -> Unit) {
         if (len < 20) return
         val key = buf.int
         buf.int
         val totalLen = buf.int
         val fragOff = buf.int
         val fragLen = len - 20
-        val state = fragMap.getOrPut(key) { Frag(totalLen, ByteArray(totalLen)) }
+
+        val state = fragmentMap.getOrPut(key) { FragmentState(totalLen, ByteArray(totalLen)) }
+
         if (fragOff >= 0 && fragOff + fragLen <= totalLen && !state.seen.contains(fragOff)) {
-            val arr = ByteArray(fragLen)
-            buf.get(arr)
-            System.arraycopy(arr, 0, state.payload, fragOff, fragLen)
+            System.arraycopy(toArray(buf, fragLen), 0, state.payload, fragOff, fragLen)
             state.written += fragLen
             state.seen.add(fragOff)
         }
+
         if (state.written >= state.totalLen) {
-            fragMap.remove(key)
-            parseReliable(ByteBuffer.wrap(state.payload), state.payload.size, cb)
+            fragmentMap.remove(key)
+            val fragmentBuf = ByteBuffer.wrap(state.payload)
+            parseReliable(fragmentBuf, state.payload.size, callback)
         }
     }
 
-    private fun parseReliable(buf: ByteBuffer, len: Int, cb: (String, Map<Byte, Any>) -> Unit) {
+    private fun toArray(buf: ByteBuffer, len: Int): ByteArray {
+        val arr = ByteArray(len)
+        buf.get(arr)
+        return arr
+    }
+
+    private fun parseReliable(buf: ByteBuffer, len: Int, callback: (type: String, params: Map<Byte, Any>) -> Unit) {
         if (len < 1) return
         buf.get()
         val msgType = buf.get()
+
         when (msgType.toInt()) {
             4 -> {
-                val code = buf.get().toInt() and 0xFF
+                val eventCode = buf.get().toInt() and 0xFF
                 val params = mutableMapOf<Byte, Any>()
-                val count = readUVar(buf)
+                val count = readUVariant(buf)
                 repeat(count) {
                     val key = buf.get()
-                    val tc = buf.get()
-                    params[key] = readVal(buf, tc)!!
+                    val typeCode = buf.get()
+                    params[key] = readValue(buf, typeCode)!!
                 }
-                params[252.toByte()] = code
-                cb("event", params)
+                params[252.toByte()] = eventCode
+                callback("event", params)
             }
             2 -> {
-                val op = buf.get().toInt() and 0xFF
+                val opCode = buf.get().toInt() and 0xFF
                 val params = mutableMapOf<Byte, Any>()
-                val count = readUVar(buf)
+                val count = readUVariant(buf)
                 repeat(count) {
                     val key = buf.get()
-                    val tc = buf.get()
-                    params[key] = readVal(buf, tc)!!
+                    val typeCode = buf.get()
+                    params[key] = readValue(buf, typeCode)!!
                 }
-                params[253.toByte()] = op
-                cb("request", params)
+                params[253.toByte()] = opCode
+                callback("request", params)
             }
             3 -> {
-                val op = buf.get().toInt() and 0xFF
+                val opCode = buf.get().toInt() and 0xFF
                 buf.short
                 val params = mutableMapOf<Byte, Any>()
-                val count = readUVar(buf)
+                val count = readUVariant(buf)
                 repeat(count) {
                     val key = buf.get()
-                    val tc = buf.get()
-                    params[key] = readVal(buf, tc)!!
+                    val typeCode = buf.get()
+                    params[key] = readValue(buf, typeCode)!!
                 }
-                params[253.toByte()] = op
-                cb("response", params)
+                params[253.toByte()] = opCode
+                callback("response", params)
             }
         }
     }
 
-    private fun readUVar(buf: ByteBuffer): Int {
+    private fun readUVariant(buf: ByteBuffer): Int {
         var result = 0
         var shift = 0
         while (true) {
-            val b = buf.get().toInt() and 0xFF
+            val b = (buf.get().toInt() and 0xFF)
             result = result or ((b and 0x7F) shl shift)
             shift += 7
             if (b and 0x80 == 0 || shift >= 35) break
@@ -123,17 +146,17 @@ object PhotonPacketParser {
         return result
     }
 
-    private fun readVal(buf: ByteBuffer, tc: Byte): Any? {
-        return when (tc.toInt()) {
+    private fun readValue(buf: ByteBuffer, typeCode: Byte): Any? {
+        return when (typeCode.toInt()) {
             0, 8 -> null
             2 -> buf.get().toInt() != 0
             3 -> buf.get()
             4 -> buf.short
             5 -> buf.float
             6 -> buf.double
-            7 -> readStr(buf)
-            9 -> readZZ32(buf)
-            10 -> readZZ64(buf)
+            7 -> readString(buf)
+            9 -> readZigZag32(buf)
+            10 -> readZigZag64(buf)
             11 -> buf.get().toInt() and 0xFF
             12 -> -(buf.get().toInt() and 0xFF)
             13 -> buf.short.toInt() and 0xFFFF
@@ -142,8 +165,8 @@ object PhotonPacketParser {
             16 -> -(buf.get().toLong() and 0xFF)
             17 -> buf.short.toLong() and 0xFFFF
             18 -> -(buf.short.toLong() and 0xFFFF)
-            21 -> readHT(buf)
-            23 -> readObjArr(buf)
+            21 -> readHashtable(buf)
+            23 -> readObjectArray(buf)
             27 -> false
             28 -> true
             29 -> 0.toShort()
@@ -153,23 +176,27 @@ object PhotonPacketParser {
             33 -> 0.0
             34 -> 0.toByte()
             else -> {
-                if (tc.toInt() and 0x40 != 0) readTArr(buf, (tc.toInt() and 0x3F).toByte())
-                else if (tc.toInt() and 0x80 != 0) readCustom(buf)
-                else null
+                if (typeCode.toInt() and 0x40 != 0) {
+                    readTypedArray(buf, (typeCode.toInt() and 0x3F).toByte())
+                } else if (typeCode.toInt() and 0x80 != 0) {
+                    readCustom(buf)
+                } else {
+                    null
+                }
             }
         }
     }
 
-    private fun readZZ32(buf: ByteBuffer): Int {
-        val v = readUVar(buf).toLong()
+    private fun readZigZag32(buf: ByteBuffer): Int {
+        val v = readUVariant(buf).toLong()
         return ((v shr 1) xor -(v and 1)).toInt()
     }
 
-    private fun readZZ64(buf: ByteBuffer): Long {
+    private fun readZigZag64(buf: ByteBuffer): Long {
         var result = 0L
         var shift = 0
         while (true) {
-            val b = buf.get().toInt() and 0xFF
+            val b = (buf.get().toInt() and 0xFF)
             result = result or ((b and 0x7F).toLong() shl shift)
             shift += 7
             if (b and 0x80 == 0 || shift >= 70) break
@@ -177,43 +204,48 @@ object PhotonPacketParser {
         return (result shr 1) xor -(result and 1)
     }
 
-    private fun readStr(buf: ByteBuffer): String {
-        val len = readUVar(buf)
+    private fun readString(buf: ByteBuffer): String {
+        val len = readUVariant(buf)
         if (len <= 0 || len > buf.remaining()) return ""
         val bytes = ByteArray(len)
         buf.get(bytes)
         return String(bytes, Charsets.UTF_8)
     }
 
-    private fun readHT(buf: ByteBuffer): Map<Any, Any> {
-        val count = readUVar(buf)
+    private fun readHashtable(buf: ByteBuffer): Map<Any, Any> {
+        val count = readUVariant(buf)
         val map = mutableMapOf<Any, Any>()
         for (i in 0 until count) {
-            val kt = buf.get()
-            val key = readVal(buf, kt)!!
-            val vt = buf.get()
-            val value = readVal(buf, vt)!!
-            map[key] = value
+            val keyType = buf.get()
+            val key = readValue(buf, keyType)
+            val valType = buf.get()
+            val value = readValue(buf, valType)
+            map[key!!] = value!!
         }
         return map
     }
 
-    private fun readObjArr(buf: ByteBuffer): List<Any?> {
-        val count = readUVar(buf)
+    private fun readObjectArray(buf: ByteBuffer): List<Any?> {
+        val count = readUVariant(buf)
         val list = mutableListOf<Any?>()
-        for (i in 0 until count) { list.add(readVal(buf, buf.get())) }
+        for (i in 0 until count) {
+            val typeCode = buf.get()
+            list.add(readValue(buf, typeCode))
+        }
         return list
     }
 
-    private fun readTArr(buf: ByteBuffer, et: Byte): List<Any?> {
-        val count = readUVar(buf)
+    private fun readTypedArray(buf: ByteBuffer, elemType: Byte): List<Any?> {
+        val count = readUVariant(buf)
         val list = mutableListOf<Any?>()
-        repeat(count) { list.add(readVal(buf, et)) }
+        for (i in 0 until count) {
+            list.add(readValue(buf, elemType))
+        }
         return list
     }
 
     private fun readCustom(buf: ByteBuffer): ByteArray {
-        val len = readUVar(buf)
+        val len = readUVariant(buf)
         if (len <= 0 || len > buf.remaining()) return ByteArray(0)
         val bytes = ByteArray(len)
         buf.get(bytes)
