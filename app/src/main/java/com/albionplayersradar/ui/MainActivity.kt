@@ -1,179 +1,244 @@
 package com.albionplayersradar.ui
 
 import android.Manifest
-import android.app.Activity
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.content.ComponentName
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.albionplayersradar.R
+import com.albionplayersradar.data.Player
 import com.albionplayersradar.vpn.AlbionVpnService
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
 
     private var vpnService: AlbionVpnService? = null
     private var vpnBound = false
 
-    private val svcConn = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            val b = binder as? AlbionVpnService.LocalBinder
-            vpnService = b?.getService()
+    private lateinit var tvStatus: TextView
+    private lateinit var btnVpn: Button
+    private lateinit var tvZone: TextView
+    private lateinit var tvCount: TextView
+    private lateinit var radarView: PlayerRendererView
+    private lateinit var tvLog: TextView
+
+    private val players = mutableListOf<Player>()
+    private var localX = 0f
+    private var localY = 0f
+    private var currentZone = ""
+
+    private val vpnConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: android.content.ComponentName?, binder: IBinder?) {
+            val b = binder as AlbionVpnService.LocalBinder
+            vpnService = b.getService()
             vpnBound = true
             setupVpnCallbacks()
+            updateStatus("Radar active")
         }
-        override fun onServiceDisconnected(name: ComponentName?) {
+        override fun onServiceDisconnected(name: android.content.ComponentName?) {
             vpnService = null
             vpnBound = false
         }
     }
 
-    private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-        if (res.resultCode == RESULT_OK) startVpnService()
-        else Toast.makeText(this, "VPN permission required", Toast.LENGTH_SHORT).show()
+    private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            startVpn()
+        } else {
+            Toast.makeText(this, "VPN permission required", Toast.LENGTH_SHORT).show()
+        }
     }
 
-    private lateinit var renderer: PlayerRendererView
+    private val receiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            when (intent?.action) {
+                ACTION_PLAYER_JOINED -> {
+                    val id = intent.getLongExtra("id", -1)
+                    val name = intent.getStringExtra("name") ?: return
+                    val guild = intent.getStringExtra("guild") ?: ""
+                    val posX = intent.getFloatExtra("posX", 0f)
+                    val posY = intent.getFloatExtra("posY", 0f)
+                    val faction = intent.getIntExtra("faction", 0)
+                    addLog("Player joined: $name [$guild]")
+                }
+                ACTION_PLAYER_LEFT -> {
+                    val id = intent.getLongExtra("id", -1)
+                    addLog("Player left: $id")
+                }
+                ACTION_PLAYER_MOVE -> {
+                    val id = intent.getLongExtra("id", -1)
+                    val posX = intent.getFloatExtra("posX", 0f)
+                    val posY = intent.getFloatExtra("posY", 0f)
+                    // Update player position
+                }
+                ACTION_ZONE -> {
+                    currentZone = intent.getStringExtra("zoneId") ?: ""
+                    tvZone.text = "Zone: $currentZone"
+                    players.clear()
+                    addLog("Zone: $currentZone")
+                }
+                ACTION_LOCAL_MOVE -> {
+                    localX = intent.getFloatExtra("posX", 0f)
+                    localY = intent.getFloatExtra("posY", 0f)
+                    radarView.updateData(localX, localY, players, currentZone)
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        createNotificationChannel()
+        setContentView(R.layout.activity_main)
 
-        val root = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setBackgroundColor(android.graphics.Color.parseColor("#111111"))
-            setPadding(32, 32, 32, 32)
+        tvStatus = findViewById(R.id.tv_status)
+        btnVpn = findViewById(R.id.btn_vpn)
+        tvZone = findViewById(R.id.tv_zone)
+        tvCount = findViewById(R.id.tv_count)
+        radarView = findViewById(R.id.radar_view)
+        tvLog = findViewById(R.id.tv_log)
+
+        btnVpn.setOnClickListener { toggleVpn() }
+
+        val filter = IntentFilter().apply {
+            addAction(ACTION_PLAYER_JOINED)
+            addAction(ACTION_PLAYER_LEFT)
+            addAction(ACTION_PLAYER_MOVE)
+            addAction(ACTION_ZONE)
+            addAction(ACTION_LOCAL_MOVE)
         }
-
-        val topBar = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            setPadding(16, 16, 16, 16)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(receiver, filter)
         }
+    }
 
-        val vpnBtn = android.widget.Button(this).apply {
-            text = "Start Radar"
-            setOnClickListener { toggleVpn() }
+    private fun toggleVpn() {
+        if (vpnService != null) {
+            stopVpn()
+        } else {
+            val intent = VpnService.prepare(this)
+            if (intent != null) {
+                vpnPermission.launch(intent)
+            } else {
+                startVpn()
+            }
         }
+    }
 
-        val zoneLabel = android.widget.TextView(this).apply {
-            text = "Zone: --"
-            setTextColor(android.graphics.Color.WHITE)
-            setPadding(24, 0, 24, 0)
+    private fun startVpn() {
+        val intent = Intent(this, AlbionVpnService::class.java)
+        startForegroundService(intent)
+        bindService(intent, vpnConnection, Context.BIND_AUTO_CREATE)
+        updateStatus("Starting...")
+    }
+
+    private fun stopVpn() {
+        if (vpnBound) {
+            unbindService(vpnConnection)
+            vpnBound = false
         }
-
-        val countLabel = android.widget.TextView(this).apply {
-            text = "Players: 0"
-            setTextColor(android.graphics.Color.parseColor("#00FF88"))
-        }
-
-        topBar.addView(vpnBtn)
-        topBar.addView(zoneLabel)
-        topBar.addView(countLabel)
-
-        renderer = PlayerRendererView(this)
-
-        root.addView(topBar)
-        root.addView(renderer)
-
-        setContentView(root)
-
-        // Inject views for VPN callbacks
-        addContentView(
-            android.widget.TextView(this).apply {
-                tag = "zoneLabel"
-                setTextColor(android.graphics.Color.WHITE)
-                setPadding(16, 8, 16, 8)
-                setBackgroundColor(android.graphics.Color.parseColor("#2d2d2d"))
-            },
-            android.widget.LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8 }
-        )
+        stopService(Intent(this, AlbionVpnService::class.java))
+        vpnService = null
+        updateStatus("Tap START to activate")
     }
 
     private fun setupVpnCallbacks() {
-        vpnService?.setOnUpdateListener { msg ->
+        AlbionVpnService.onUpdate = { msg ->
             runOnUiThread {
                 when {
+                    msg.startsWith("JOIN:") -> {
+                        val parts = msg.split("|")
+                        if (parts.size >= 4) {
+                            val name = parts[1]
+                            val guild = parts[2]
+                            addLog("→ $name [$guild]")
+                        }
+                    }
                     msg.startsWith("ZONE:") -> {
                         val zone = msg.substringAfter("ZONE:")
-                        findViewWithTag<android.widget.TextView>("zoneLabel")?.text = "Zone: $zone"
+                        currentZone = zone
+                        tvZone.text = "Zone: $zone"
+                        players.clear()
                     }
-                    msg.startsWith("PLAYER:") -> {
-                        val parts = msg.substringAfter("PLAYER:").split("|")
-                        if (parts.size >= 4) {
-                            val id = parts[0].toLongOrNull() ?: return@runOnUiThread
-                            val name = parts[1]
-                            val guild = parts.getOrNull(2) ?: ""
-                            val faction = parts.getOrNull(3)?.toIntOrNull() ?: 0
-                            val player = com.albionplayersradar.data.Player(
-                                id = id,
-                                name = name,
-                                guildName = guild.ifEmpty { null },
-                                allianceName = null,
-                                faction = faction
-                            )
-                            renderer.updatePlayer(player)
-                            findViewById<android.widget.TextView>(R.id.tv_count)?.text = "Players: ${vpnService?.getPlayerCount() ?: 0}"
+                    msg.startsWith("LOCAL:") -> {
+                        val coords = msg.substringAfter("LOCAL:").split("|")
+                        if (coords.size >= 2) {
+                            localX = coords[0].toFloatOrNull() ?: 0f
+                            localY = coords[1].toFloatOrNull() ?: 0f
+                            radarView.updateData(localX, localY, players, currentZone)
                         }
                     }
                     msg.startsWith("MOVE:") -> {
                         val parts = msg.substringAfter("MOVE:").split("|")
                         if (parts.size >= 3) {
                             val id = parts[0].toLongOrNull() ?: return@runOnUiThread
-                            val x = parts[1].toFloatOrNull() ?: return@runOnUiThread
-                            val y = parts[2].toFloatOrNull() ?: return@runOnUiThread
-                            val p = vpnService?.getPlayer(id)
+                            val posX = parts[1].toFloatOrNull() ?: 0f
+                            val posY = parts[2].toFloatOrNull() ?: 0f
+                            val p = players.find { it.id == id }
                             if (p != null) {
-                                p.posX = x
-                                p.posY = y
-                                renderer.updatePlayer(p)
+                                tvCount.text = "Players: ${players.size}"
+                                radarView.updateData(localX, localY, players, currentZone)
                             }
                         }
                     }
-                    msg.startsWith("LEFT:") -> {
-                        val id = msg.substringAfter("LEFT:").toLongOrNull() ?: return@runOnUiThread
-                        renderer.removePlayer(id)
-                        findViewById<android.widget.TextView>(R.id.tv_count)?.text = "Players: ${vpnService?.getPlayerCount() ?: 0}"
+                    msg.startsWith("LEAVE:") -> {
+                        val id = msg.substringAfter("LEAVE:").toLongOrNull()
+                        if (id != null) {
+                            players.removeAll { it.id == id }
+                            tvCount.text = "Players: ${players.size}"
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun toggleVpn() {
-        if (vpnService != null) {
-            vpnService?.stopRun()
-            vpnService = null
-        } else {
-            val intent = VpnService.prepare(this)
-            if (intent != null) vpnPermission.launch(intent)
-            else startVpnService()
-        }
+    private fun updateStatus(text: String) {
+        tvStatus.text = text
+        btnVpn.text = if (vpnService != null) "STOP RADAR" else "START RADAR"
     }
 
-    private fun startVpnService() {
-        val intent = Intent(this, AlbionVpnService::class.java)
-        startService(intent)
-        bindService(intent, svcConn, Context.BIND_AUTO_CREATE)
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel("radar", "Albion Radar", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
-        }
+    private fun addLog(msg: String) {
+        tvLog.text = "$msg\n${tvLog.text}".lines().take(20).joinToString("\n")
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (vpnBound) { unbindService(svcConn); vpnBound = false }
+        if (vpnBound) {
+            unbindService(vpnConnection)
+            vpnBound = false
+        }
+        try {
+            unregisterReceiver(receiver)
+        } catch (e: Exception) {}
+    }
+
+    companion object {
+        const val ACTION_PLAYER_JOINED = "com.albionplayersradar.ACTION_JOIN"
+        const val ACTION_PLAYER_LEFT = "com.albionplayersradar.ACTION_LEAVE"
+        const val ACTION_PLAYER_MOVE = "com.albionplayersradar.ACTION_MOVE"
+        const val ACTION_ZONE = "com.albionplayersradar.ACTION_ZONE"
+        const val ACTION_LOCAL_MOVE = "com.albionplayersradar.ACTION_LOCAL"
+
+        fun broadcastPlayerJoined(id: Long, name: String, guild: String, posX: Float, posY: Float, faction: Int) {
+            // Stub — not needed since we're using direct callback
+        }
+        fun broadcastPlayerLeave(id: Long) {}
+        fun broadcastPlayerMove(id: Long, posX: Float, posY: Float) {}
+        fun broadcastZone(zoneId: String) {}
     }
 }
