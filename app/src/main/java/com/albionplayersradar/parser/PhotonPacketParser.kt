@@ -74,7 +74,6 @@ object PhotonPacketParser {
         val fragLen = len - 20
 
         val state = fragmentMap.getOrPut(key) { FragmentState(totalLen, ByteArray(totalLen)) }
-
         if (fragOff >= 0 && fragOff + fragLen <= totalLen && !state.seen.contains(fragOff)) {
             val arr = ByteArray(fragLen)
             buf.get(arr)
@@ -98,18 +97,22 @@ object PhotonPacketParser {
         when (msgType.toInt()) {
             MSG_EVENT -> {
                 val code = buf.get().toInt() and 0xFF
-                val params = mutableMapOf<Byte, Any>()
-                repeat(readUVariant(buf)) {
+                val params = LinkedHashMap<Byte, Any>()
+                var i = 0
+                while (i < readUVariant(buf)) {
                     params[buf.get()] = readValue(buf, buf.get())!!
+                    i++
                 }
                 params[252.toByte()] = code
                 cb("event", params)
             }
             MSG_REQUEST -> {
                 val op = buf.get().toInt() and 0xFF
-                val params = mutableMapOf<Byte, Any>()
-                repeat(readUVariant(buf)) {
+                val params = LinkedHashMap<Byte, Any>()
+                var i = 0
+                while (i < readUVariant(buf)) {
                     params[buf.get()] = readValue(buf, buf.get())!!
+                    i++
                 }
                 params[253.toByte()] = op
                 cb("request", params)
@@ -117,9 +120,11 @@ object PhotonPacketParser {
             MSG_RESPONSE -> {
                 val op = buf.get().toInt() and 0xFF
                 buf.short
-                val params = mutableMapOf<Byte, Any>()
-                repeat(readUVariant(buf)) {
+                val params = LinkedHashMap<Byte, Any>()
+                var i = 0
+                while (i < readUVariant(buf)) {
                     params[buf.get()] = readValue(buf, buf.get())!!
+                    i++
                 }
                 params[253.toByte()] = op
                 cb("response", params)
@@ -163,24 +168,34 @@ object PhotonPacketParser {
     }
 
     private fun readHashtable(buf: ByteBuffer): Map<Any, Any> {
-        val map = mutableMapOf<Any, Any>()
-        repeat(readUVariant(buf)) {
+        val map = LinkedHashMap<Any, Any>()
+        var i = 0
+        while (i < readUVariant(buf)) {
             val key = readValue(buf, buf.get())!!
             val value = readValue(buf, buf.get())!!
             map[key] = value
+            i++
         }
         return map
     }
 
     private fun readObjectArray(buf: ByteBuffer): List<Any?> {
         val list = mutableListOf<Any?>()
-        repeat(readUVariant(buf)) { list.add(readValue(buf, buf.get())) }
+        var i = 0
+        while (i < readUVariant(buf)) {
+            list.add(readValue(buf, buf.get()))
+            i++
+        }
         return list
     }
 
     private fun readTypedArray(buf: ByteBuffer, elemType: Byte): List<Any?> {
         val list = mutableListOf<Any?>()
-        repeat(readUVariant(buf)) { list.add(readValue(buf, elemType)) }
+        var i = 0
+        while (i < readUVariant(buf)) {
+            list.add(readValue(buf, elemType))
+            i++
+        }
         return list
     }
 
