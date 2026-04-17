@@ -8,16 +8,16 @@ object PhotonPacketParser {
     private const val PACKET_HEADER_SIZE = 12
     private const val CMD_HEADER_SIZE = 12
 
-    private const val CMD_DISCONNECT: Byte = 4
-    private const val CMD_SEND_RELIABLE: Byte = 6
-    private const val CMD_SEND_UNRELIABLE: Byte = 7
-    private const val CMD_SEND_FRAGMENT: Byte = 8
+    private const val CMD_DISCONNECT = 4
+    private const val CMD_SEND_RELIABLE = 6
+    private const val CMD_SEND_UNRELIABLE = 7
+    private const val CMD_SEND_FRAGMENT = 8
 
-    private const val MSG_REQUEST: Byte = 2
-    private const val MSG_RESPONSE: Byte = 3
-    private const val MSG_EVENT: Byte = 4
+    private const val MSG_REQUEST = 2
+    private const val MSG_RESPONSE = 3
+    private const val MSG_EVENT = 4
 
-    fun parsePacket(data: ByteArray, callback: (type: String, params: Map<Byte, Any>) -> Unit) {
+    fun parse(data: ByteArray, callback: (type: String, params: Map<Byte, Any>) -> Unit) {
         if (data.size < PACKET_HEADER_SIZE) return
         try {
             val buf = ByteBuffer.wrap(data)
@@ -25,24 +25,24 @@ object PhotonPacketParser {
 
             while (buf.hasRemaining()) {
                 if (buf.remaining() < 4) break
-                val cmdType = buf.get()
-                buf.get() // channelId
-                buf.get() // flags
-                buf.get() // reserved
+                val cmdType = buf.get().toInt()
+                buf.get()
+                buf.get()
+                buf.get()
                 val cmdLen = buf.int
-                buf.int // sequence number
+                buf.int
 
                 val payloadLen = cmdLen - CMD_HEADER_SIZE
                 if (payloadLen <= 0 || payloadLen > buf.remaining()) break
 
-                when (cmdType.toInt()) {
-                    CMD_DISCONNECT.toInt() -> { buf.position(buf.position() + payloadLen) }
+                when (cmdType) {
+                    CMD_DISCONNECT -> { buf.position(buf.position() + payloadLen) }
                     CMD_SEND_RELIABLE -> {
-                        buf.get() // reliability byte
+                        buf.get()
                         parseReliable(buf, payloadLen - 1, callback)
                     }
                     CMD_SEND_UNRELIABLE -> {
-                        buf.int // sequence number
+                        buf.int
                         parseReliable(buf, payloadLen - 4, callback)
                     }
                     CMD_SEND_FRAGMENT -> {
@@ -52,7 +52,7 @@ object PhotonPacketParser {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "parsePacket failed", e)
+            Log.e(TAG, "parse failed", e)
         }
     }
 
@@ -62,41 +62,35 @@ object PhotonPacketParser {
     private fun parseFragment(buf: ByteBuffer, len: Int, callback: (type: String, params: Map<Byte, Any>) -> Unit) {
         if (len < 20) return
         val key = buf.int
-        buf.int // channelId
+        buf.int
         val totalLen = buf.int
         val fragOff = buf.int
         val fragLen = len - 20
 
-        val state = fragmentMap.getOrPut(key) {
-            FragmentState(totalLen, ByteArray(totalLen))
-        }
+        val state = fragmentMap.getOrPut(key) { FragmentState(totalLen, ByteArray(totalLen)) }
 
         if (fragOff >= 0 && fragOff + fragLen <= totalLen && !state.seen.contains(fragOff)) {
-            System.arraycopy(toArray(buf, fragLen), 0, state.payload, fragOff, fragLen)
+            val arr = ByteArray(fragLen)
+            buf.get(arr)
+            System.arraycopy(arr, 0, state.payload, fragOff, fragLen)
             state.written += fragLen
             state.seen.add(fragOff)
         }
 
         if (state.written >= state.totalLen) {
             fragmentMap.remove(key)
-            val fragmentBuf = ByteBuffer.wrap(state.payload)
-            parseReliable(fragmentBuf, state.payload.size, callback)
+            val fb = ByteBuffer.wrap(state.payload)
+            parseReliable(fb, state.payload.size, callback)
         }
-    }
-
-    private fun toArray(buf: ByteBuffer, len: Int): ByteArray {
-        val arr = ByteArray(len)
-        buf.get(arr)
-        return arr
     }
 
     private fun parseReliable(buf: ByteBuffer, len: Int, callback: (type: String, params: Map<Byte, Any>) -> Unit) {
         if (len < 1) return
-        buf.get() // reliability byte
-        val msgType = buf.get()
+        buf.get()
+        val msgType = buf.get().toInt()
 
-        when (msgType.toInt()) {
-            MSG_EVENT.toInt() -> {
+        when (msgType) {
+            MSG_EVENT -> {
                 val eventCode = buf.get().toInt() and 0xFF
                 val params = mutableMapOf<Byte, Any>()
                 val count = readUVariant(buf)
@@ -108,7 +102,7 @@ object PhotonPacketParser {
                 params[252.toByte()] = eventCode
                 callback("event", params)
             }
-            MSG_REQUEST.toInt() -> {
+            MSG_REQUEST -> {
                 val opCode = buf.get().toInt() and 0xFF
                 val params = mutableMapOf<Byte, Any>()
                 val count = readUVariant(buf)
@@ -120,9 +114,9 @@ object PhotonPacketParser {
                 params[253.toByte()] = opCode
                 callback("request", params)
             }
-            MSG_RESPONSE.toInt() -> {
+            MSG_RESPONSE -> {
                 val opCode = buf.get().toInt() and 0xFF
-                buf.short // return code
+                buf.short
                 val params = mutableMapOf<Byte, Any>()
                 val count = readUVariant(buf)
                 repeat(count) {
@@ -140,7 +134,7 @@ object PhotonPacketParser {
         var result = 0
         var shift = 0
         while (true) {
-            val b = (buf.get().toInt() and 0xFF)
+            val b = buf.get().toInt() and 0xFF
             result = result or ((b and 0x7F) shl shift)
             shift += 7
             if (b and 0x80 == 0 || shift >= 35) break
@@ -157,7 +151,7 @@ object PhotonPacketParser {
         var result = 0L
         var shift = 0
         while (true) {
-            val b = (buf.get().toInt() and 0xFF)
+            val b = buf.get().toInt() and 0xFF
             result = result or ((b and 0x7F).toLong() shl shift)
             shift += 7
             if (b and 0x80 == 0 || shift >= 70) break
