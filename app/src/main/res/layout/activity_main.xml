@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
@@ -11,33 +10,33 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:padding="12dp"
-        android:background="#1a1a1a">
+        android:background="#2d2d2d">
 
         <Button
-            android:id="@+id/btn_vpn"
+            android:id="@+id/btn_vpn_toggle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Start Radar"
+            android:textColor="#ffffff" />
+
+        <TextView
+            android:id="@+id/status_text"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Start Radar" />
+            android:text="Tap START to activate"
+            android:textColor="#888888"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:paddingHorizontal="8dp" />
 
         <TextView
-            android:id="@+id/tv_zone"
+            android:id="@+id/zone_text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Zone: --"
-            android:textColor="#ffffff"
-            android:layout_marginStart="12dp"
-            android:layout_gravity="center_vertical" />
-
-        <TextView
-            android:id="@+id/tv_count"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Players: 0"
-            android:textColor="#00FF88"
-            android:layout_marginStart="12dp"
-            android:layout_gravity="center_vertical" />
-
+            android:textColor="#00ff88"
+            android:textSize="12sp" />
     </LinearLayout>
 
     <FrameLayout
@@ -45,21 +44,30 @@
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_margin="8dp"
         android:background="#1a1a2e" />
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="120dp"
-        android:background="#0d0d0d">
+        android:background="#0a0a15">
+
         <TextView
-            android:id="@+id/tv_log"
+            android:id="@+id/log_text"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="#888888"
-            android:textSize="10sp"
+            android:textColor="#aaaaaa"
+            android:textSize="11sp"
             android:padding="8dp"
             android:fontFamily="monospace" />
     </ScrollView>
 
+    <TextView
+        android:id="@+id/count_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Players: 0"
+        android:textColor="#00ff88"
+        android:textSize="12sp"
+        android:padding="8dp"
+        android:background="#1a1a1a" />
 </LinearLayout>
