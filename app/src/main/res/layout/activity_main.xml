@@ -16,7 +16,7 @@
             android:id="@+id/btn_vpn_toggle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Start Radar"
+            android:text="START RADAR"
             android:textColor="#ffffff" />
 
         <TextView
@@ -39,16 +39,27 @@
             android:textSize="12sp" />
     </LinearLayout>
 
-    <FrameLayout
+    <!-- PlayerRendererView directly — fixes the FrameLayout cast error -->
+    <com.albionplayersradar.ui.PlayerRendererView
         android:id="@+id/radar_view"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:background="#1a1a2e" />
 
+    <TextView
+        android:id="@+id/count_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Players: 0"
+        android:textColor="#00ff88"
+        android:textSize="12sp"
+        android:padding="6dp"
+        android:background="#1a1a1a" />
+
     <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="120dp"
+        android:layout_height="100dp"
         android:background="#0a0a15">
 
         <TextView
@@ -61,13 +72,4 @@
             android:fontFamily="monospace" />
     </ScrollView>
 
-    <TextView
-        android:id="@+id/count_text"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Players: 0"
-        android:textColor="#00ff88"
-        android:textSize="12sp"
-        android:padding="8dp"
-        android:background="#1a1a1a" />
 </LinearLayout>
