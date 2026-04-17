@@ -19,7 +19,6 @@ object PhotonPacketParser {
     private const val MSG_EVENT: Byte = 4
 
     private val fragmentMap = mutableMapOf<Int, FragmentState>()
-
     private data class FragmentState(
         val totalLen: Int,
         val payload: ByteArray,
@@ -48,15 +47,15 @@ object PhotonPacketParser {
 
                 when (cmdType.toInt()) {
                     CMD_DISCONNECT.toInt() -> buf.position(buf.position() + payloadLen)
-                    CMD_SEND_RELIABLE -> {
+                    CMD_SEND_RELIABLE.toInt() -> {
                         buf.get()
                         parseReliable(buf, payloadLen - 1, cb)
                     }
-                    CMD_SEND_UNRELIABLE -> {
+                    CMD_SEND_UNRELIABLE.toInt() -> {
                         buf.int
                         parseReliable(buf, payloadLen - 4, cb)
                     }
-                    CMD_SEND_FRAGMENT -> parseFragment(buf, payloadLen, cb)
+                    CMD_SEND_FRAGMENT.toInt() -> parseFragment(buf, payloadLen, cb)
                     else -> buf.position(buf.position() + payloadLen)
                 }
             }
@@ -74,6 +73,7 @@ object PhotonPacketParser {
         val fragLen = len - 20
 
         val state = fragmentMap.getOrPut(key) { FragmentState(totalLen, ByteArray(totalLen)) }
+
         if (fragOff >= 0 && fragOff + fragLen <= totalLen && !state.seen.contains(fragOff)) {
             val arr = ByteArray(fragLen)
             buf.get(arr)
@@ -95,36 +95,51 @@ object PhotonPacketParser {
         val msgType = buf.get()
 
         when (msgType.toInt()) {
-            MSG_EVENT -> {
+            MSG_EVENT.toInt() -> {
                 val code = buf.get().toInt() and 0xFF
-                val params = LinkedHashMap<Byte, Any>()
-                var i = 0
-                while (i < readUVariant(buf)) {
-                    params[buf.get()] = readValue(buf, buf.get())!!
-                    i++
+                val params = mutableMapOf<Byte, Any>()
+                var count = 0
+                while (count < 10 && buf.hasRemaining()) {
+                    val key = buf.get()
+                    val typeCode = buf.get()
+                    val value = readValue(buf, typeCode)
+                    if (value != null) {
+                        params[key] = value
+                        count++
+                    } else break
                 }
                 params[252.toByte()] = code
                 cb("event", params)
             }
-            MSG_REQUEST -> {
+            MSG_REQUEST.toInt() -> {
                 val op = buf.get().toInt() and 0xFF
-                val params = LinkedHashMap<Byte, Any>()
-                var i = 0
-                while (i < readUVariant(buf)) {
-                    params[buf.get()] = readValue(buf, buf.get())!!
-                    i++
+                val params = mutableMapOf<Byte, Any>()
+                var count = 0
+                while (count < 10 && buf.hasRemaining()) {
+                    val key = buf.get()
+                    val typeCode = buf.get()
+                    val value = readValue(buf, typeCode)
+                    if (value != null) {
+                        params[key] = value
+                        count++
+                    } else break
                 }
                 params[253.toByte()] = op
                 cb("request", params)
             }
-            MSG_RESPONSE -> {
+            MSG_RESPONSE.toInt() -> {
                 val op = buf.get().toInt() and 0xFF
                 buf.short
-                val params = LinkedHashMap<Byte, Any>()
-                var i = 0
-                while (i < readUVariant(buf)) {
-                    params[buf.get()] = readValue(buf, buf.get())!!
-                    i++
+                val params = mutableMapOf<Byte, Any>()
+                var count = 0
+                while (count < 10 && buf.hasRemaining()) {
+                    val key = buf.get()
+                    val typeCode = buf.get()
+                    val value = readValue(buf, typeCode)
+                    if (value != null) {
+                        params[key] = value
+                        count++
+                    } else break
                 }
                 params[253.toByte()] = op
                 cb("response", params)
@@ -167,32 +182,40 @@ object PhotonPacketParser {
         return String(b, Charsets.UTF_8)
     }
 
-    private fun readHashtable(buf: ByteBuffer): Map<Any, Any> {
-        val map = LinkedHashMap<Any, Any>()
+    private fun readHashtable(buf: ByteBuffer): java.util.Map<Any, Any> {
+        val map = java.util.LinkedHashMap<Any, Any>()
+        val count = readUVariant(buf)
         var i = 0
-        while (i < readUVariant(buf)) {
-            val key = readValue(buf, buf.get())!!
-            val value = readValue(buf, buf.get())!!
-            map[key] = value
-            i++
+        while (i < count && buf.hasRemaining() && i < 50) {
+            val keyType = buf.get()
+            val key = readValue(buf, keyType)
+            val valType = buf.get()
+            val value = readValue(buf, valType)
+            if (key != null && value != null) {
+                map[key] = value
+                i++
+            } else break
         }
         return map
     }
 
-    private fun readObjectArray(buf: ByteBuffer): List<Any?> {
-        val list = mutableListOf<Any?>()
+    private fun readObjectArray(buf: ByteBuffer): java.util.List<Any?> {
+        val list = java.util.ArrayList<Any?>()
+        val count = readUVariant(buf)
         var i = 0
-        while (i < readUVariant(buf)) {
-            list.add(readValue(buf, buf.get()))
+        while (i < count && buf.hasRemaining() && i < 100) {
+            val typeCode = buf.get()
+            list.add(readValue(buf, typeCode))
             i++
         }
         return list
     }
 
-    private fun readTypedArray(buf: ByteBuffer, elemType: Byte): List<Any?> {
-        val list = mutableListOf<Any?>()
+    private fun readTypedArray(buf: ByteBuffer, elemType: Byte): java.util.List<Any?> {
+        val list = java.util.ArrayList<Any?>()
+        val count = readUVariant(buf)
         var i = 0
-        while (i < readUVariant(buf)) {
+        while (i < count && buf.hasRemaining() && i < 100) {
             list.add(readValue(buf, elemType))
             i++
         }
