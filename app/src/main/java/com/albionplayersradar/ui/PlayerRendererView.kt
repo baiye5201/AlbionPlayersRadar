@@ -24,15 +24,13 @@ class PlayerRendererView @JvmOverloads constructor(
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = Color.parseColor("#333366") }
     private val localPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 24f; textAlign = Paint.Align.CENTER }
-    private val alertPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 8f; color = Color.RED }
+    private val alertPaint = Paint().apply { color = Color.parseColor("#FF000080"); style = Paint.Style.STROKE; strokeWidth = 12f }
 
     private val playerPaints = mapOf(
         ThreatLevel.PASSIVE to Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#00FF88"); style = Paint.Style.FILL },
         ThreatLevel.FACTION to Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FFA500"); style = Paint.Style.FILL },
-        ThreatLevel.HOSTILE to Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.RED; style = Paint.Style.FILL }
+        ThreatLevel.HOSTILE to Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FF0000"); style = Paint.Style.FILL }
     )
-
-    private var hasHostile = false
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -42,13 +40,17 @@ class PlayerRendererView @JvmOverloads constructor(
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
 
         for (ring in listOf(25f, 50f, 75f)) {
-            val r = ring * radarScale
-            if (r < min(cx, cy)) canvas.drawCircle(cx, cy, r, ringPaint)
+            val radius = ring * radarScale
+            if (radius < min(cx, cy)) canvas.drawCircle(cx, cy, radius, ringPaint)
         }
 
         canvas.drawCircle(cx, cy, 8f, localPaint)
 
+        val hasHostile = players.any { it.isHostile }
+
         for (player in players) {
+            if (player.isPassive && pvpType == "safe") continue
+
             val dx = (player.posX - localX) * radarScale
             val dy = (player.posY - localY) * radarScale
             val px = cx + dx
@@ -62,27 +64,17 @@ class PlayerRendererView @JvmOverloads constructor(
             val paint = playerPaints[player.threatLevel] ?: playerPaints[ThreatLevel.PASSIVE]!!
             canvas.drawCircle(px, py, if (player.isHostile) 12f else 8f, paint)
 
-            if (dist < 60f) {
-                textPaint.textSize = 20f
-                val label = if (player.guildName != null) "${player.name.take(6)} [${player.guildName.take(4)}]" else player.name.take(8)
-                canvas.drawText(label, px, py - 10f, textPaint)
+            if (dist < 80f) {
+                canvas.drawText(player.name.take(8), px, py - 10f, textPaint)
             }
         }
 
         if (hasHostile && pvpType == "black") {
-            alertPaint.style = Paint.Style.STROKE
-            alertPaint.strokeWidth = 16f
-            canvas.drawRect(8f, 8f, width - 8f, height - 8f, alertPaint)
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), alertPaint)
         }
     }
 
     fun updateData(lx: Float, ly: Float, list: List<Player>, zoneId: String) {
-        localX = lx
-        localY = ly
-        players = list
-        hasHostile = list.any { it.isHostile }
-        invalidate()
+        localX = lx; localY = ly; players = list; pvpType = com.albionplayersradar.data.ZonesDatabase.getPvpType(zoneId); invalidate()
     }
-
-    fun setPvPType(type: String) { pvpType = type; invalidate() }
 }
