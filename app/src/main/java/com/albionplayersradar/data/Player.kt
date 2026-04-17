@@ -16,14 +16,19 @@ data class Player(
     val healthPercent: Float
         get() = if (maxHealth > 0) currentHealth.toFloat() / maxHealth else 0f
 
-    val isHostile: Boolean get() = faction == 255
-    val isPassive: Boolean get() = faction == 0
-    val isFactionPlayer: Boolean get() = faction in 1..6
+    val isHostile: Boolean
+        get() = faction == 255
 
-    val threatLevel: String
+    val isPassive: Boolean
+        get() = faction == 0
+
+    val isFactionPlayer: Boolean
+        get() = faction in 1..6
+
+    val threatLevel: ThreatLevel
         get() = when {
-            isHostile -> "HOSTILE"
-            isFactionPlayer -> "FACTION"
-            else -> "PASSIVE"
+            isHostile -> ThreatLevel.HOSTILE
+            isFactionPlayer -> ThreatLevel.FACTION
+            else -> ThreatLevel.PASSIVE
         }
 }
