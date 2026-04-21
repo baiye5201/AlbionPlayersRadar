@@ -21,4 +21,4 @@ Real-time Albion Online player detection Android app using VPN-based network cap
 - WebView canvas radar overlay
 
 ## Security
-⚠️ Educational purposes only. Use responsibly.
+⚠️ Educational purposes only. Use responsibly.  
